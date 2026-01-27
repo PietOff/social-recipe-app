@@ -152,20 +152,67 @@ export default function Home() {
             )}
           </>
         ) : (
-          <div className="cookbook-grid" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+          <div className="cookbook-container" style={{ paddingBottom: '2rem' }}>
             {savedRecipes.length === 0 ? (
               <p style={{ textAlign: 'center', color: '#888', marginTop: '2rem' }}>
                 No recipes saved yet. Go find some tasty videos!
               </p>
             ) : (
-              savedRecipes.map((r, idx) => (
-                <RecipeCard
-                  key={idx}
-                  recipe={r}
-                  onSave={saveRecipe}
-                  isSaved={true}
-                />
-              ))
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+                {Array.from(new Set(savedRecipes.map(r => r.category || 'Uncategorized'))).map(category => (
+                  <div key={category}>
+                    <h3 style={{ marginLeft: '0.5rem', marginBottom: '1rem', color: '#444', borderLeft: '4px solid #FF6B6B', paddingLeft: '10px' }}>
+                      {category}
+                    </h3>
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+                      gap: '1rem'
+                    }}>
+                      {savedRecipes.filter(r => (r.category || 'Uncategorized') === category).map((r, idx) => (
+                        <div
+                          key={idx}
+                          onClick={() => {
+                            setRecipe(r);
+                            setActiveTab('new'); // Switch to view/edit mode to see full card
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                          style={{
+                            background: 'white',
+                            borderRadius: '16px',
+                            overflow: 'hidden',
+                            boxShadow: '0 4px 15px rgba(0,0,0,0.05)',
+                            cursor: 'pointer',
+                            transition: 'transform 0.2s',
+                            aspectRatio: '0.8'
+                          }}
+                        >
+                          <div style={{
+                            height: '65%',
+                            background: '#eee',
+                            backgroundImage: `url(${r.image_url || ''})`,
+                            backgroundSize: 'cover',
+                            backgroundPosition: 'center'
+                          }} />
+                          <div style={{ padding: '0.8rem' }}>
+                            <h4 style={{
+                              margin: 0,
+                              fontSize: '0.9rem',
+                              fontWeight: '600',
+                              display: '-webkit-box',
+                              WebkitLineClamp: 2,
+                              WebkitBoxOrient: 'vertical',
+                              overflow: 'hidden'
+                            }}>
+                              {r.title}
+                            </h4>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         )}

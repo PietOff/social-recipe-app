@@ -13,8 +13,22 @@ export default function RecipeCard({ recipe, onSave, isSaved }: RecipeCardProps)
         <div className={`glass-panel ${styles.card} animate-fade-in`}>
             {recipe.image_url && (
                 <div className={styles.imageContainer}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={recipe.image_url} alt={recipe.title} className={styles.image} />
+                    {recipe.category && (
+                        <span className={styles.categoryBadge} style={{
+                            position: 'absolute',
+                            top: '10px',
+                            left: '10px',
+                            background: 'rgba(0,0,0,0.6)',
+                            color: 'white',
+                            padding: '4px 12px',
+                            borderRadius: '20px',
+                            fontSize: '0.8rem',
+                            backdropFilter: 'blur(4px)'
+                        }}>
+                            {recipe.category}
+                        </span>
+                    )}
                 </div>
             )}
 
