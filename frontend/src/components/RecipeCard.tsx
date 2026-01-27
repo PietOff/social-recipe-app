@@ -91,15 +91,34 @@ export default function RecipeCard({ recipe, onSave, isSaved }: RecipeCardProps)
                                     {group}
                                 </h4>
                             )}
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem 1rem' }}>
-                                {ingredients.map((ing, i) => (
-                                    <li key={i} className={styles.ingredient}>
-                                        <span>{ing.item}</span>
-                                        <span style={{ color: '#888' }}>
-                                            {ing.amount || ''} {ing.unit || ''}
-                                        </span>
-                                    </li>
-                                ))}
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.8rem' }}>
+                                {ingredients.map((ing, i) => {
+                                    // Logic to clean up "400g g" -> "400g"
+                                    let displayAmount = ing.amount || '';
+                                    let displayUnit = ing.unit || '';
+
+                                    // specific cleanup for common LLM issues
+                                    if (displayAmount.toLowerCase().endsWith(displayUnit.toLowerCase())) {
+                                        displayUnit = '';
+                                    }
+                                    // if amount is like "50ml" and unit is "ml", clear unit
+                                    if (/[a-z]+$/.test(displayAmount) && displayUnit) {
+                                        // simplistic check: if amount ends in letters, it probably has the unit
+                                        // refined: strict check if amount ends with unit
+                                        if (displayAmount.toLowerCase().endsWith(displayUnit.toLowerCase())) {
+                                            displayUnit = '';
+                                        }
+                                    }
+
+                                    return (
+                                        <li key={i} className={styles.ingredient}>
+                                            <span className={styles.amount}>
+                                                {displayAmount} {displayUnit}
+                                            </span>
+                                            <span className={styles.item}>{ing.item}</span>
+                                        </li>
+                                    );
+                                })}
                             </div>
                         </div>
                     ))}

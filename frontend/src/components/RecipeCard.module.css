@@ -44,6 +44,36 @@
     gap: 1rem;
 }
 
+.ingredient {
+    display: flex;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.6rem;
+    background: rgba(255, 255, 255, 0.6);
+    border-radius: 12px;
+    font-size: 0.95rem;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.02);
+    transition: transform 0.2s;
+}
+
+.ingredient:hover {
+    transform: translateY(-2px);
+    background: rgba(255, 255, 255, 0.9);
+}
+
+.amount {
+    font-weight: 700;
+    color: #FF6B6B;
+    white-space: nowrap;
+}
+
+.item {
+    font-weight: 500;
+    color: #333;
+    line-height: 1.3;
+}
+
 .title {
     font-size: 2.5rem;
     margin-bottom: 0.5rem;
