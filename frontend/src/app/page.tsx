@@ -193,50 +193,97 @@ export default function Home() {
                   return <p style={{ padding: '0 1rem', color: '#666' }}>No recipes found for "{searchQuery}".</p>;
                 }
 
-                // Grouping Logic for "Cookbook Structure"
+                // --- GROUPING LOGIC ---
+
                 const MEAL_TYPES = ['Breakfast', 'Brunch', 'Lunch', 'Dinner', 'Snack', 'Dessert'];
-                const DISH_TYPES = ['Sandwich', 'Pasta', 'Pizza', 'Salad', 'Soup', 'Rice', 'Meat', 'Fish', 'Vegetarian', 'Vegan'];
+                // Priority list for Dish Types (Specific > Generic)
+                const DISH_TYPES = [
+                  'Burger', 'Pizza', 'Pasta', 'Sandwich', 'Wrap', 'Tacos', 'Bowl',
+                  'Salad', 'Soup', 'Rice', 'Stew', 'Curry', 'Roast', 'Bake', 'Meat', 'Fish',
+                  'Vegetarian', 'Vegan'
+                ];
 
-                const sections: { title: string, recipes: Recipe[] }[] = [];
+                const mealSections: { title: string, recipes: Recipe[] }[] = [];
+                const dishSections: { title: string, recipes: Recipe[] }[] = [];
 
-                // 1. Add Sections for MEAL TYPES
+                // 1. MEAL TYPES SECTION (Recipes can appear in multiple meal types)
                 MEAL_TYPES.forEach(meal => {
                   const matching = filteredRecipes.filter(r => {
                     const tags = r.tags || (r.category ? [r.category] : []);
                     return tags.some(t => t.toLowerCase() === meal.toLowerCase());
                   });
-                  if (matching.length > 0) sections.push({ title: meal, recipes: matching });
+                  if (matching.length > 0) mealSections.push({ title: meal, recipes: matching });
                 });
 
-                // 2. Add Sections for DISH TYPES
+                // 2. DISH TYPES SECTION (Mutually Exclusive per constraints)
+                const dishMap: Record<string, Recipe[]> = {};
+                const otherRecipes: Recipe[] = [];
+
+                filteredRecipes.forEach(r => {
+                  const tags = (r.tags || (r.category ? categoryToTags(r.category) : [])).map(t => t.toLowerCase());
+
+                  // Find the FIRST matching dish type from the priority list
+                  const primaryDish = DISH_TYPES.find(d => tags.includes(d.toLowerCase()));
+
+                  if (primaryDish) {
+                    if (!dishMap[primaryDish]) dishMap[primaryDish] = [];
+                    dishMap[primaryDish].push(r);
+                  } else {
+                    // Only add to "Other" if it is NOT in any meal type either? 
+                    // User said "grids for meal type. Then underneath that... dish type".
+                    // Usually "Other" implies not fitting in the specific buckets above.
+                    // But since we have a split view, let's put it in "Other Discovers" at the bottom if it doesn't match a DISH type.
+                    otherRecipes.push(r);
+                  }
+                });
+
+                // Convert map to sections array based on DISH_TYPES order
                 DISH_TYPES.forEach(dish => {
-                  const matching = filteredRecipes.filter(r => {
-                    const tags = r.tags || (r.category ? [r.category] : []);
-                    // Check if tag matches dish type
-                    return tags.some(t => t.toLowerCase() === dish.toLowerCase());
-                  });
-                  if (matching.length > 0) sections.push({ title: dish, recipes: matching });
+                  if (dishMap[dish] && dishMap[dish].length > 0) {
+                    dishSections.push({ title: dish, recipes: dishMap[dish] });
+                  }
                 });
 
-                // 3. Catch-all for Other/Uncategorized
-                const known = [...MEAL_TYPES, ...DISH_TYPES];
-                const other = filteredRecipes.filter(r => {
-                  const tags = r.tags || (r.category ? [r.category] : []);
-                  // Include if NO tags match ANY known category
-                  return !tags.some(t => known.some(k => k.toLowerCase() === t.toLowerCase()));
-                });
-                if (other.length > 0) sections.push({ title: 'Other Discovers', recipes: other });
+                if (otherRecipes.length > 0) {
+                  dishSections.push({ title: 'Other Discovers', recipes: otherRecipes });
+                }
 
                 return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                    {sections.map(section => (
-                      <CategoryAccordion
-                        key={section.title}
-                        title={section.title}
-                        recipes={section.recipes}
-                        onSelect={(r) => { setRecipe(r); setActiveTab('new'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                      />
-                    ))}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+
+                    {/* SECTION 1: MEAL TYPES */}
+                    {mealSections.length > 0 && (
+                      <div className="animate-fade-in" style={{ padding: '0 0.5rem' }}>
+                        <h3 style={{ marginLeft: '1rem', marginBottom: '0.5rem', opacity: 0.7, textTransform: 'uppercase', fontSize: '0.8rem', letterSpacing: '1px' }}>By Meal</h3>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                          {mealSections.map(section => (
+                            <CategoryAccordion
+                              key={`meal-${section.title}`}
+                              title={section.title}
+                              recipes={section.recipes}
+                              onSelect={(r) => { setRecipe(r); setActiveTab('new'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* SECTION 2: DISH TYPES */}
+                    {dishSections.length > 0 && (
+                      <div className="animate-fade-in" style={{ padding: '0 0.5rem' }}>
+                        <h3 style={{ marginLeft: '1rem', marginBottom: '0.5rem', opacity: 0.7, textTransform: 'uppercase', fontSize: '0.8rem', letterSpacing: '1px' }}>By Dish</h3>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                          {dishSections.map(section => (
+                            <CategoryAccordion
+                              key={`dish-${section.title}`}
+                              title={section.title}
+                              recipes={section.recipes}
+                              onSelect={(r) => { setRecipe(r); setActiveTab('new'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })()
