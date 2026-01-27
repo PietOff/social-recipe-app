@@ -79,8 +79,8 @@ def parse_with_llm(text_data: str, api_key: str):
     """
     try:
         genai.configure(api_key=api_key)
-        # Using gemini-1.5-flash which is fast and supports JSON response format natively
-        model = genai.GenerativeModel('gemini-1.5-flash',
+        # Using gemini-pro as fallback since 1.5-flash is causing 404s
+        model = genai.GenerativeModel('gemini-pro',
                                       generation_config={"response_mime_type": "application/json",
                                                          "response_schema": Recipe})
         
