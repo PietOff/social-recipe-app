@@ -91,15 +91,28 @@ def get_video_data(url: str, extract_audio: bool = False):
         })
     
     # 3. Execute yt-dlp
+    # 3. Execute yt-dlp
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
+            # TRY 1: Attempt to get audio + metadata
             info = ydl.extract_info(url, download=extract_audio)
+        except yt_dlp.utils.DownloadError as e:
+            # FALLBACK: If audio download is blocked (Sign in required), try metadata only
+            if extract_audio and "Sign in" in str(e):
+                logger.warning("YouTube blocked audio download. Falling back to metadata only...")
+                ydl_opts['skip_download'] = True
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl_fallback:
+                    info = ydl_fallback.extract_info(url, download=False)
+            else:
+                raise e
+
+        try:
             description = info.get('description', '')
             title = info.get('title', '')
             thumbnail = info.get('thumbnail', '')
             
-            # Check for audio file if we asked for it
-            if extract_audio:
+            # Check for audio file if we asked for it AND download succeeded
+            if extract_audio and not ydl_opts.get('skip_download'):
                 video_id = info.get('id')
                 # yt-dlp with postprocessor usually appends .mp3
                 potential_path = Path(f'{temp_dir}/{video_id}.mp3')
@@ -109,8 +122,8 @@ def get_video_data(url: str, extract_audio: bool = False):
             combined_text = f"Title: {title}\nDescription: {description}"
             return combined_text, thumbnail, audio_path
         except Exception as e:
-            logger.error(f"yt-dlp error: {str(e)}")
-            raise HTTPException(status_code=400, detail=f"Could not extract data from URL: {str(e)}")
+            logger.error(f"yt-dlp processing error: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Could not processing video data: {str(e)}")
 
 def transcribe_audio(audio_path: str, api_key: str):
     """
