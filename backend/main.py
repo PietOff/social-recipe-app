@@ -138,7 +138,7 @@ def parse_with_llm(text_data: str, api_key: str):
         client = Groq(api_key=api_key)
         
         prompt = f"""
-        You are an expert chef and data parser. I will give you text extracted from a social media cooking video (TikTok/Instagram). 
+        You are an expert chef and data parser. I will give you text (and possibly audio transcript) extracted from a social media cooking video (TikTok/Instagram/YouTube). 
         Your goal is to extract a structured recipe from it.
         
         CRITICAL RULES:

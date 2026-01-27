@@ -124,7 +124,7 @@ export default function Home() {
               <div className={styles.inputGroup}>
                 <input
                   type="url"
-                  placeholder="Paste TikTok or Instagram URL..."
+                  placeholder="Paste TikTok, Instagram or YouTube URL..."
                   className="input-field"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
