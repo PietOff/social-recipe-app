@@ -69,16 +69,41 @@ export default function RecipeCard({ recipe, onSave, isSaved }: RecipeCardProps)
 
             <div className={styles.section}>
                 <h3 className={styles.sectionTitle}>Ingredients</h3>
-                <ul className={styles.ingredientList}>
-                    {recipe.ingredients.map((ing, idx) => (
-                        <li key={idx} className={styles.ingredientItem}>
-                            <span className={styles.amount}>
-                                {ing.amount} {ing.unit}
-                            </span>
-                            <span className={styles.name}>{ing.item}</span>
-                        </li>
+                {/* Ingredients grouped by section */}
+                <div className={styles.ingredientsList}>
+                    {Object.entries(
+                        recipe.ingredients.reduce((acc, ing) => {
+                            const group = ing.group || 'Main';
+                            if (!acc[group]) acc[group] = [];
+                            acc[group].push(ing);
+                            return acc;
+                        }, {} as Record<string, typeof recipe.ingredients>)
+                    ).map(([group, ingredients]) => (
+                        <div key={group} style={{ gridColumn: '1 / -1', marginBottom: '1rem' }}>
+                            {/* Only show header if there's more than one group or if the group is named something specific (not "Main") unless we want to be consistent */}
+                            {group !== 'Main' && (
+                                <h4 style={{
+                                    margin: '0.5rem 0',
+                                    color: '#FF6B6B',
+                                    borderBottom: '1px solid #eee',
+                                    paddingBottom: '4px'
+                                }}>
+                                    {group}
+                                </h4>
+                            )}
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem 1rem' }}>
+                                {ingredients.map((ing, i) => (
+                                    <li key={i} className={styles.ingredient}>
+                                        <span>{ing.item}</span>
+                                        <span style={{ color: '#888' }}>
+                                            {ing.amount || ''} {ing.unit || ''}
+                                        </span>
+                                    </li>
+                                ))}
+                            </div>
+                        </div>
                     ))}
-                </ul>
+                </div>
             </div>
 
             <div className={styles.section}>
