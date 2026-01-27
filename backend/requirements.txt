@@ -1,6 +1,7 @@
+yt-dlp>=2024.08.01
 fastapi
 uvicorn
-yt-dlp
-google-generativeai
 python-dotenv
+google-generativeai>=0.8.3
+typing-extensionsv
 requests
