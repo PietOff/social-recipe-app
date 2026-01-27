@@ -71,57 +71,61 @@ export default function RecipeCard({ recipe, onSave, isSaved }: RecipeCardProps)
                 <h3 className={styles.sectionTitle}>Ingredients</h3>
                 {/* Ingredients grouped by section */}
                 <div className={styles.ingredientsList}>
-                    {Object.entries(
-                        recipe.ingredients.reduce((acc, ing) => {
+                    {(() => {
+                        const grouped = recipe.ingredients.reduce((acc, ing) => {
                             const group = ing.group || 'Main';
                             if (!acc[group]) acc[group] = [];
                             acc[group].push(ing);
                             return acc;
-                        }, {} as Record<string, typeof recipe.ingredients>)
-                    ).map(([group, ingredients]) => (
-                        <div key={group} style={{ gridColumn: '1 / -1', marginBottom: '1rem' }}>
-                            {/* Only show header if there's more than one group or if the group is named something specific (not "Main") unless we want to be consistent */}
-                            {group !== 'Main' && (
-                                <h4 style={{
-                                    margin: '0.5rem 0',
-                                    color: '#FF6B6B',
-                                    borderBottom: '1px solid #eee',
-                                    paddingBottom: '4px'
-                                }}>
-                                    {group}
-                                </h4>
-                            )}
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.8rem' }}>
-                                {ingredients.map((ing, i) => {
-                                    // Logic to clean up "400g g" -> "400g"
-                                    let displayAmount = ing.amount || '';
-                                    let displayUnit = ing.unit || '';
+                        }, {} as Record<string, typeof recipe.ingredients>);
 
-                                    // specific cleanup for common LLM issues
-                                    if (displayAmount.toLowerCase().endsWith(displayUnit.toLowerCase())) {
-                                        displayUnit = '';
-                                    }
-                                    // if amount is like "50ml" and unit is "ml", clear unit
-                                    if (/[a-z]+$/.test(displayAmount) && displayUnit) {
-                                        // simplistic check: if amount ends in letters, it probably has the unit
-                                        // refined: strict check if amount ends with unit
+                        const groupKeys = Object.keys(grouped);
+                        const showHeaders = groupKeys.length > 1;
+
+                        return groupKeys.map((group) => (
+                            <div key={group} style={{ gridColumn: '1 / -1', marginBottom: '1rem' }}>
+                                {/* Show header if we have multiple groups, OR if the single group is NOT 'Main' (e.g. 'Batter' only) */}
+                                {(showHeaders || group !== 'Main') && (
+                                    <h4 style={{
+                                        margin: '0.5rem 0',
+                                        color: '#FF6B6B',
+                                        borderBottom: '1px solid #eee',
+                                        paddingBottom: '4px',
+                                        textTransform: 'capitalize'
+                                    }}>
+                                        {group}
+                                    </h4>
+                                )}
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.8rem' }}>
+                                    {grouped[group].map((ing, i) => {
+                                        // Logic to clean up "400g g" -> "400g"
+                                        let displayAmount = ing.amount || '';
+                                        let displayUnit = ing.unit || '';
+
+                                        // specific cleanup for common LLM issues
                                         if (displayAmount.toLowerCase().endsWith(displayUnit.toLowerCase())) {
                                             displayUnit = '';
                                         }
-                                    }
+                                        if (displayUnit && displayAmount.toLowerCase().endsWith(displayUnit.toLowerCase())) {
+                                            displayUnit = '';
+                                        }
 
-                                    return (
-                                        <li key={i} className={styles.ingredient}>
-                                            <span className={styles.amount}>
-                                                {displayAmount} {displayUnit}
-                                            </span>
-                                            <span className={styles.item}>{ing.item}</span>
-                                        </li>
-                                    );
-                                })}
+                                        // Capitalize item
+                                        const itemCapitalized = ing.item.charAt(0).toUpperCase() + ing.item.slice(1);
+
+                                        return (
+                                            <li key={i} className={styles.ingredient}>
+                                                <span className={styles.amount}>
+                                                    {displayAmount} {displayUnit}
+                                                </span>
+                                                <span className={styles.item}>{itemCapitalized}</span>
+                                            </li>
+                                        );
+                                    })}
+                                </div>
                             </div>
-                        </div>
-                    ))}
+                        ));
+                    })()}
                 </div>
             </div>
 
