@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Recipe } from '../types';
-import styles from './page.module.css'; // Reusing styles
+import styles from '../app/page.module.css'; // Reusing styles
 
 interface Props {
     title: string;
