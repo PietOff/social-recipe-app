@@ -41,6 +41,7 @@ class Ingredient(typing_extensions.TypedDict):
     item: str
     amount: Optional[str]
     unit: Optional[str]
+    group: Optional[str] # New field: e.g. "Sauce", "Marinade"
 
 class Recipe(typing_extensions.TypedDict):
     title: str
@@ -152,12 +153,13 @@ def parse_with_llm(text_data: str, api_key: str):
         1. Convert ALL units to METRIC (ml, l, g, kg). Do NOT use cups, oz, lbs, or spoons if possible (use grams/ml).
         2. Categorize the recipe into one of: "Breakfast", "Lunch", "Dinner", "Snack", "Dessert".
         3. If ingredient AMOUNTS are missing in the text, USE YOUR CULINARY KNOWLEDGE to estimate reasonable metric amounts (e.g. "200g" for pasta for 2 people). NEVER return empty strings for amount/unit if you can infer them.
+        4. Group ingredients by component if applicable (e.g., "Sauce", "Dressing", "Main"). If no distinct groups, use "Main".
         
         Return ONLY valid JSON matching this schema:
         {{
             "title": "string",
             "description": "string",
-            "ingredients": [{{"item": "string", "amount": "string", "unit": "string (metric)"}}],
+            "ingredients": [{{"item": "string", "amount": "string", "unit": "string (metric)", "group": "string"}}],
             "instructions": ["string (step 1)", "string (step 2)"],
             "prep_time": "string (e.g. 15 mins)",
             "cook_time": "string (e.g. 1 hour)",
