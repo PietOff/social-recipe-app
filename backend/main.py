@@ -76,13 +76,15 @@ def get_video_data(url: str, extract_audio: bool = False):
     
     # 2. Add audio extraction options if requested
     temp_dir = tempfile.gettempdir()
+    # Ensure subtitles have a predictable filename pattern
+    ydl_opts['outtmpl'] = f'{temp_dir}/%(id)s.%(ext)s'
+    
     audio_path = None
     
     if extract_audio:
         ydl_opts.update({
             'skip_download': False,
             'format': 'bestaudio/best',
-            'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
@@ -91,18 +93,17 @@ def get_video_data(url: str, extract_audio: bool = False):
         })
     
     # 3. Execute yt-dlp
-    # 3. Execute yt-dlp
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
-            # TRY 1: Attempt to get audio + metadata
+            # TRY 1: Attempt to get audio + metadata + subtitles
             info = ydl.extract_info(url, download=extract_audio)
         except yt_dlp.utils.DownloadError as e:
-            # FALLBACK: If audio download is blocked (Sign in required), try metadata only
+            # FALLBACK: If audio download is blocked, try metadata + subtitles ONLY
             if extract_audio and "Sign in" in str(e):
-                logger.warning("YouTube blocked audio download. Falling back to metadata only...")
+                logger.warning("YouTube blocked audio. Falling back to metadata + subtitles...")
                 ydl_opts['skip_download'] = True
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl_fallback:
-                    info = ydl_fallback.extract_info(url, download=False)
+                    info = ydl_fallback.extract_info(url, download=True) # download=True needed for subtitles/metadata
             else:
                 raise e
 
@@ -110,16 +111,32 @@ def get_video_data(url: str, extract_audio: bool = False):
             description = info.get('description', '')
             title = info.get('title', '')
             thumbnail = info.get('thumbnail', '')
+            video_id = info.get('id')
             
             # Check for audio file if we asked for it AND download succeeded
             if extract_audio and not ydl_opts.get('skip_download'):
-                video_id = info.get('id')
                 # yt-dlp with postprocessor usually appends .mp3
                 potential_path = Path(f'{temp_dir}/{video_id}.mp3')
                 if potential_path.exists():
                     audio_path = str(potential_path)
-            
+
+            # 4. Look for and read Subtitles (.vtt files)
             combined_text = f"Title: {title}\nDescription: {description}"
+            
+            # Pattern match for any subtitle file for this video ID
+            subtitle_content = ""
+            for file_path in Path(temp_dir).glob(f"{video_id}*.vtt"):
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        subtitle_content += f.read() + "\n"
+                    # Cleanup subtitle file
+                    os.remove(file_path)
+                except Exception as e:
+                    logger.warning(f"Could not read subtitle file {file_path}: {e}")
+            
+            if subtitle_content:
+                combined_text += f"\n\n[SUBTITLES/CAPTIONS]:\n{subtitle_content}"
+
             return combined_text, thumbnail, audio_path
         except Exception as e:
             logger.error(f"yt-dlp processing error: {str(e)}")
