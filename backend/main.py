@@ -52,7 +52,7 @@ class Recipe(typing_extensions.TypedDict):
     cook_time: Optional[str]
     servings: Optional[str]
     image_url: Optional[str]
-    category: Optional[str]
+    tags: List[str]  # Replaces 'category', stores ["Lunch", "Sandwich", etc.]
 
 # --- Functions ---
 
@@ -151,7 +151,10 @@ def parse_with_llm(text_data: str, api_key: str):
         
         CRITICAL RULES:
         1. Convert ALL units to METRIC (ml, l, g, kg). Do NOT use cups, oz, lbs, or spoons if possible (use grams/ml).
-        2. Categorize the recipe into one of: "Breakfast", "Lunch", "Dinner", "Snack", "Dessert".
+        2. Analyze the recipe and assign multiple TAGS from these lists:
+           - MEAL TYPES: "Breakfast", "Brunch", "Lunch", "Dinner", "Snack", "Dessert".
+           - DISH TYPES: "Sandwich", "Pasta", "Pizza", "Salad", "Soup", "Rice", "Meat", "Fish", "Vegetarian", "Vegan".
+           - Add other relevant tags (e.g. "Chicken", "Healthy") if appropriate.
         3. If ingredient AMOUNTS are missing in the text, USE YOUR CULINARY KNOWLEDGE to estimate reasonable metric amounts (e.g. "200g" for pasta for 2 people). NEVER return empty strings for amount/unit if you can infer them.
         4. Group ingredients by component if applicable (e.g., "Sauce", "Dressing", "Main"). If no distinct groups, use "Main".
         
@@ -164,7 +167,7 @@ def parse_with_llm(text_data: str, api_key: str):
             "prep_time": "string (e.g. 15 mins)",
             "cook_time": "string (e.g. 1 hour)",
             "servings": "string (e.g. 4 people)",
-            "category": "string (enum)",
+            "tags": ["string", "string"],
             "image_url": null
         }}
 
