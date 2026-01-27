@@ -199,6 +199,7 @@ export default function Home() {
                               margin: 0,
                               fontSize: '0.9rem',
                               fontWeight: '600',
+                              color: '#333', // Explicit color to fix white-on-white issue
                               display: '-webkit-box',
                               WebkitLineClamp: 2,
                               WebkitBoxOrient: 'vertical',
