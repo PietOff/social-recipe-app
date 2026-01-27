@@ -1,4 +1,4 @@
-yt-dlp>=2024.08.01
+yt-dlp>=2025.01.12
 fastapi
 uvicorn
 python-dotenv
