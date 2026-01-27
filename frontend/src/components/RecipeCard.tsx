@@ -1,0 +1,63 @@
+import React from 'react';
+import { Recipe } from '../types';
+import styles from './RecipeCard.module.css';
+
+interface RecipeCardProps {
+    recipe: Recipe;
+}
+
+export default function RecipeCard({ recipe }: RecipeCardProps) {
+    return (
+        <div className={`glass-panel ${styles.card} animate-fade-in`}>
+            <h2 className={styles.title}>{recipe.title}</h2>
+            <p className={styles.description}>{recipe.description}</p>
+
+            <div className={styles.metaGrid}>
+                {recipe.prep_time && (
+                    <div className={styles.metaItem}>
+                        <span className={styles.metaLabel}>Prep</span>
+                        <span className={styles.metaValue}>{recipe.prep_time}</span>
+                    </div>
+                )}
+                {recipe.cook_time && (
+                    <div className={styles.metaItem}>
+                        <span className={styles.metaLabel}>Cook</span>
+                        <span className={styles.metaValue}>{recipe.cook_time}</span>
+                    </div>
+                )}
+                {recipe.servings && (
+                    <div className={styles.metaItem}>
+                        <span className={styles.metaLabel}>Servings</span>
+                        <span className={styles.metaValue}>{recipe.servings}</span>
+                    </div>
+                )}
+            </div>
+
+            <div className={styles.section}>
+                <h3 className={styles.sectionTitle}>Ingredients</h3>
+                <ul className={styles.ingredientList}>
+                    {recipe.ingredients.map((ing, idx) => (
+                        <li key={idx} className={styles.ingredientItem}>
+                            <span className={styles.amount}>
+                                {ing.amount} {ing.unit}
+                            </span>
+                            <span className={styles.name}>{ing.item}</span>
+                        </li>
+                    ))}
+                </ul>
+            </div>
+
+            <div className={styles.section}>
+                <h3 className={styles.sectionTitle}>Instructions</h3>
+                <div className={styles.steps}>
+                    {recipe.instructions.map((step, idx) => (
+                        <div key={idx} className={styles.step}>
+                            <div className={styles.stepNumber}>{idx + 1}</div>
+                            <p className={styles.stepText}>{step}</p>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
+}
