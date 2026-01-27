@@ -43,6 +43,7 @@ class Recipe(typing_extensions.TypedDict):
     cook_time: Optional[str]
     servings: Optional[str]
     image_url: Optional[str]
+    category: Optional[str] # New field: Breakfast, Lunch, Dinner, Snack, Dessert
 
 class ExtractRequest(BaseModel):
     url: str
@@ -87,19 +88,24 @@ def parse_with_llm(text_data: str, api_key: str):
         You are an expert chef and data parser. I will give you text extracted from a social media cooking video (TikTok/Instagram). 
         Your goal is to extract a structured recipe from it.
         
+        CRITICAL RULES:
+        1. Convert ALL units to METRIC (ml, l, g, kg). Do NOT use cups, oz, lbs, or spoons if possible (use grams/ml).
+        2. Categorize the recipe into one of: "Breakfast", "Lunch", "Dinner", "Snack", "Dessert".
+        
         Return ONLY valid JSON matching this schema:
         {{
             "title": "string",
             "description": "string",
-            "ingredients": [{{"item": "string", "amount": "string", "unit": "string"}}],
+            "ingredients": [{{"item": "string", "amount": "string", "unit": "string (metric)"}}],
             "instructions": ["string (step 1)", "string (step 2)"],
             "prep_time": "string (e.g. 15 mins)",
             "cook_time": "string (e.g. 1 hour)",
             "servings": "string (e.g. 4 people)",
+            "category": "string (enum)",
             "image_url": null
         }}
 
-        If the text contains no recipe, return empty strings/arrays but explain in description.
+        If the text contains no recipe, return empty strings but explain in description.
         If language is Dutch, keep it Dutch.
         
         Raw Text:
