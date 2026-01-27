@@ -45,10 +45,11 @@ class Recipe(typing_extensions.TypedDict):
     prep_time: Optional[str]
     cook_time: Optional[str]
     servings: Optional[str]
+    image_url: Optional[str]
 
 def get_video_data(url: str):
     """
-    Uses yt-dlp to extract metadata and automatic captions/subtitles if available.
+    Uses yt-dlp to extract metadata like title, description, and thumbnail.
     """
     ydl_opts = {
         'skip_download': True,
@@ -56,7 +57,7 @@ def get_video_data(url: str):
         'no_warnings': True,
         'writesubtitles': True,
         'writeautomaticsub': True,
-        'subtitleslangs': ['en', 'nl', 'auto'], # English and Dutch
+        'subtitleslangs': ['en', 'nl', 'auto'],
     }
     
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -64,9 +65,10 @@ def get_video_data(url: str):
             info = ydl.extract_info(url, download=False)
             description = info.get('description', '')
             title = info.get('title', '')
+            thumbnail = info.get('thumbnail', '')
             
             combined_text = f"Title: {title}\nDescription: {description}"
-            return combined_text
+            return combined_text, thumbnail
         except Exception as e:
             logger.error(f"yt-dlp error: {str(e)}")
             raise HTTPException(status_code=400, detail=f"Could not extract data from URL: {str(e)}")
@@ -88,6 +90,7 @@ def parse_with_llm(text_data: str, api_key: str):
         
         If the text is just chatter and contains no recipe, return a JSON with empty fields ("") but explain in 'description' that no recipe was found.
         If the language is Dutch, keep the recipe in Dutch. If English, keep it in English.
+        Do NOT try to invent an 'image_url', leave it empty or null in the JSON, I will fill it from metadata.
         
         Raw Text:
         {text_data}
@@ -106,10 +109,13 @@ def extract_recipe(request: ExtractRequest):
         raise HTTPException(status_code=401, detail="Gemini API Key is required (either in env or request)")
 
     # 1. Extract raw data
-    raw_text = get_video_data(request.url)
+    raw_text, thumbnail_url = get_video_data(request.url)
     
     # 2. Parse with LLM
     recipe_data = parse_with_llm(raw_text, api_key)
+    
+    # 3. Inject the real thumbnail URL
+    recipe_data['image_url'] = thumbnail_url
     
     return recipe_data
 

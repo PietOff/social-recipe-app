@@ -12,4 +12,5 @@ export interface Recipe {
     prep_time?: string;
     cook_time?: string;
     servings?: string;
+    image_url?: string;
 }

@@ -4,12 +4,32 @@ import styles from './RecipeCard.module.css';
 
 interface RecipeCardProps {
     recipe: Recipe;
+    onSave?: (recipe: Recipe) => void;
+    isSaved?: boolean;
 }
 
-export default function RecipeCard({ recipe }: RecipeCardProps) {
+export default function RecipeCard({ recipe, onSave, isSaved }: RecipeCardProps) {
     return (
         <div className={`glass-panel ${styles.card} animate-fade-in`}>
-            <h2 className={styles.title}>{recipe.title}</h2>
+            {recipe.image_url && (
+                <div className={styles.imageContainer}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={recipe.image_url} alt={recipe.title} className={styles.image} />
+                </div>
+            )}
+
+            <div className={styles.header}>
+                <h2 className={styles.title}>{recipe.title}</h2>
+                {onSave && (
+                    <button
+                        onClick={() => onSave(recipe)}
+                        className={`${styles.saveButton} ${isSaved ? styles.saved : ''}`}
+                    >
+                        {isSaved ? '❤️ Saved' : '🤍 Save'}
+                    </button>
+                )}
+            </div>
+
             <p className={styles.description}>{recipe.description}</p>
 
             <div className={styles.metaGrid}>
