@@ -50,9 +50,10 @@ export default function Home() {
     setRecipe(null);
 
     try {
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL
+      // FIX: Hardcode the known production backend to bypass Vercel Env Var configuration errors
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL && !process.env.NEXT_PUBLIC_BACKEND_URL.includes('social-recipe-appsocial')
         ? `${process.env.NEXT_PUBLIC_BACKEND_URL}/extract-recipe`
-        : `http://${window.location.hostname}:8000/extract-recipe`;
+        : 'https://social-recipe-backend.onrender.com/extract-recipe';
 
       const res = await fetch(backendUrl, {
         method: 'POST',
