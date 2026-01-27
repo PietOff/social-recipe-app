@@ -50,10 +50,10 @@ export default function Home() {
     setRecipe(null);
 
     try {
-      // FIX: Hardcode the known production backend to bypass Vercel Env Var configuration errors
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL && !process.env.NEXT_PUBLIC_BACKEND_URL.includes('social-recipe-appsocial')
+      // FIX: Use the validated Render URL (it looks weird, but it works!)
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL
         ? `${process.env.NEXT_PUBLIC_BACKEND_URL}/extract-recipe`
-        : 'https://social-recipe-backend.onrender.com/extract-recipe';
+        : 'https://social-recipe-appsocial-recipe-backend.onrender.com/extract-recipe';
 
       const res = await fetch(backendUrl, {
         method: 'POST',
