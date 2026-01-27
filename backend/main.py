@@ -79,8 +79,8 @@ def parse_with_llm(text_data: str, api_key: str):
     """
     try:
         genai.configure(api_key=api_key)
-        # Using gemini-pro as fallback since 1.5-flash is causing 404s
-        model = genai.GenerativeModel('gemini-pro',
+        # Using gemini-1.5-pro as it is confirmed available in the user's API key
+        model = genai.GenerativeModel('gemini-1.5-pro',
                                       generation_config={"response_mime_type": "application/json",
                                                          "response_schema": Recipe})
         
