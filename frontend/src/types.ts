@@ -14,5 +14,8 @@ export interface Recipe {
     cook_time?: string;
     servings?: string;
     image_url?: string;
-    category?: 'Breakfast' | 'Lunch' | 'Dinner' | 'Snack' | 'Dessert' | string;
+    image_url?: string;
+    tags?: string[];
+    keywords?: string[];
+    category?: string; // Legacy
 }

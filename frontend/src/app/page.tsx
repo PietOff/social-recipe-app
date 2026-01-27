@@ -12,6 +12,7 @@ export default function Home() {
   const [recipe, setRecipe] = useState<Recipe | null>(null); // Re-added state
   const [savedRecipes, setSavedRecipes] = useState<Recipe[]>([]);
   const [activeTab, setActiveTab] = useState<'new' | 'saved'>('new');
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Load saved recipes on mount
   React.useEffect(() => {
