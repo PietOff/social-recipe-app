@@ -2,40 +2,37 @@ import os
 import json
 import logging
 import typing_extensions
-from typing import Optional, List
-from fastapi import FastAPI, HTTPException, Body
+from typing import List, Optional
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import yt_dlp
-import google.generativeai as genai
+from groq import Groq
 from dotenv import load_dotenv
 
+# Load env vars
 load_dotenv()
 
-app = FastAPI(title="Social Recipe Extractor")
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Configure CORS
+app = FastAPI()
+
+# CORS: Allow all for simplicity in this demo (including mobile via IP)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For development; strict in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Logger setup
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Request Model
-class ExtractRequest(BaseModel):
-    url: str
-    gemini_api_key: Optional[str] = None
-
+# --- Data Models ---
 class Ingredient(typing_extensions.TypedDict):
     item: str
-    amount: Optional[str]
-    unit: Optional[str]
+    amount: str
+    unit: str
 
 class Recipe(typing_extensions.TypedDict):
     title: str
@@ -46,6 +43,12 @@ class Recipe(typing_extensions.TypedDict):
     cook_time: Optional[str]
     servings: Optional[str]
     image_url: Optional[str]
+
+class ExtractRequest(BaseModel):
+    url: str
+    api_key: Optional[str] = None # Generic name, can accept any supported key
+
+# --- Helpers ---
 
 def get_video_data(url: str):
     """
@@ -75,38 +78,57 @@ def get_video_data(url: str):
 
 def parse_with_llm(text_data: str, api_key: str):
     """
-    Uses Google Gemini to parse the raw text into a structured Recipe.
+    Uses Groq (Llama 3) to parse the raw text into a structured Recipe.
     """
     try:
-        genai.configure(api_key=api_key)
-        # Using gemini-1.5-pro as it is confirmed available in the user's API key
-        model = genai.GenerativeModel('gemini-1.5-pro',
-                                      generation_config={"response_mime_type": "application/json",
-                                                         "response_schema": Recipe})
+        client = Groq(api_key=api_key)
         
         prompt = f"""
         You are an expert chef and data parser. I will give you text extracted from a social media cooking video (TikTok/Instagram). 
         Your goal is to extract a structured recipe from it.
         
-        If the text is just chatter and contains no recipe, return a JSON with empty fields ("") but explain in 'description' that no recipe was found.
-        If the language is Dutch, keep the recipe in Dutch. If English, keep it in English.
-        Do NOT try to invent an 'image_url', leave it empty or null in the JSON, I will fill it from metadata.
+        Return ONLY valid JSON matching this schema:
+        {{
+            "title": "string",
+            "description": "string",
+            "ingredients": [{{"item": "string", "amount": "string", "unit": "string"}}],
+            "instructions": ["string (step 1)", "string (step 2)"],
+            "prep_time": "string (e.g. 15 mins)",
+            "cook_time": "string (e.g. 1 hour)",
+            "servings": "string (e.g. 4 people)",
+            "image_url": null
+        }}
+
+        If the text contains no recipe, return empty strings/arrays but explain in description.
+        If language is Dutch, keep it Dutch.
         
         Raw Text:
         {text_data}
         """
         
-        response = model.generate_content(prompt)
-        return json.loads(response.text)
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile", 
+            messages=[
+                {"role": "system", "content": "You are a JSON-only API. You must return a valid JSON object and nothing else."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0,
+            response_format={"type": "json_object"}
+        )
+        
+        content = completion.choices[0].message.content
+        return json.loads(content)
     except Exception as e:
-        logger.error(f"Gemini error: {str(e)}")
+        logger.error(f"Groq error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"AI parsing failed: {str(e)}")
 
 @app.post("/extract-recipe")
 def extract_recipe(request: ExtractRequest):
-    api_key = request.gemini_api_key or os.getenv("GEMINI_API_KEY")
+    # Try different env vars to be flexible
+    api_key = request.api_key or os.getenv("GROQ_API_KEY") or os.getenv("GEMINI_API_KEY")
+    
     if not api_key:
-        raise HTTPException(status_code=401, detail="Gemini API Key is required (either in env or request)")
+        raise HTTPException(status_code=401, detail="API Key is required (GROQ_API_KEY)")
 
     # 1. Extract raw data
     raw_text, thumbnail_url = get_video_data(request.url)
@@ -118,7 +140,3 @@ def extract_recipe(request: ExtractRequest):
     recipe_data['image_url'] = thumbnail_url
     
     return recipe_data
-
-@app.get("/")
-def health_check():
-    return {"status": "ok", "service": "Social Recipe Extractor (Gemini)"}
