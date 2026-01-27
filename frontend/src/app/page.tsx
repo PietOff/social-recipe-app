@@ -60,7 +60,8 @@ export default function Home() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          url
+          url,
+          api_key: undefined // Optional, handled on backend via env var
         }),
       });
 
