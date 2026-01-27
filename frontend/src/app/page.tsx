@@ -9,6 +9,7 @@ export default function Home() {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recipe, setRecipe] = useState<Recipe | null>(null); // Re-added state
   const [savedRecipes, setSavedRecipes] = useState<Recipe[]>([]);
   const [activeTab, setActiveTab] = useState<'new' | 'saved'>('new');
 
