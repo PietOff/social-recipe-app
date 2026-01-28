@@ -12,6 +12,8 @@ from groq import Groq
 from dotenv import load_dotenv
 import tempfile
 from pathlib import Path
+import base64
+import subprocess
 
 # Load env vars
 load_dotenv()
@@ -457,28 +459,180 @@ def parse_with_llm(text_data: str, api_key: str):
 
 # --- Endpoints ---
 
+def extract_direct_video_url(url: str, html: str) -> Optional[str]:
+    """
+    Attempts to find a direct .mp4 URL from the HTML/JSON of TikTok/Instagram.
+    """
+    try:
+        # 1. Instagram / Generic OG
+        og_video = re.search(r'<meta property="og:video" content="(.*?)"', html)
+        if og_video:
+            return og_video.group(1)
+            
+        # 2. Instagram JSON (sharedData)
+        if "instagram.com" in url:
+            shared_data = re.search(r'window\._sharedData\s*=\s*({.+?});', html)
+            if shared_data:
+                data = json.loads(shared_data.group(1))
+                # Deep traverse could be complex, simple string search for video_url might suffice
+                # or rely on og:video which usually works for Insta
+                pass
+
+        # 3. TikTok JSON
+        if "tiktok.com" in url:
+            # Try to find playAddr in nextjs data
+            next_data = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
+            if next_data:
+                data = json.loads(next_data.group(1))
+                # Traverse for 'playAddr'? 
+                # TikTok structure changes often. 
+                # Let's try a regex for contentUrl which is often in schema.org
+                pass
+            
+            content_url = re.search(r'"contentUrl":"(https://[^"]+?\.mp4[^"]*?)"', html)
+            if content_url:
+                return content_url.group(1).replace(r'\u0026', '&')
+
+        return None
+    except Exception as e:
+        logger.warning(f"Direct URL extraction failed: {e}")
+        return None
+
+def extract_frames(video_path: str, num_frames: int = 4) -> List[str]:
+    """
+    Extracts key frames from video using FFmpeg and converts to base64.
+    """
+    import subprocess
+    frames = []
+    try:
+        # Get duration
+        result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        duration = float(result.stdout)
+        
+        timestamps = [duration * (i + 1) / (num_frames + 1) for i in range(num_frames)]
+        
+        for ts in timestamps:
+            # Extract frame to memory (pipe)
+            cmd = [
+                "ffmpeg", "-ss", str(ts), "-i", video_path,
+                "-frames:v", "1", "-f", "image2", "-c:v", "mjpeg", "-"
+            ]
+            process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if process.returncode == 0:
+                frames.append(base64.b64encode(process.stdout).decode('utf-8'))
+                
+    except Exception as e:
+        logger.warning(f"Frame extraction failed: {e}")
+        
+    return frames
+
+def analyze_visuals_with_groq(frames: List[str], api_key: str) -> str:
+    """
+    Sends video frames to Groq's Llama Vision model to read on-screen text and actions.
+    """
+    if not frames:
+        return ""
+        
+    try:
+        client = Groq(api_key=api_key)
+        
+        # Prepare content: Text prompt + Images
+        content = [
+            {"type": "text", "text": "These are frames from a cooking video. Describe strictly what you see: ingredients shown, amounts visible in text overlays, and cooking actions. Do not hallucinate."}
+        ]
+        
+        for b64 in frames:
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                     "url": f"data:image/jpeg;base64,{b64}"
+                }
+            })
+
+        completion = client.chat.completions.create(
+            model="llama-3.2-11b-vision-preview",
+            messages=[
+                {
+                    "role": "user",
+                    "content": content
+                }
+            ],
+            temperature=0,
+            max_tokens=1024,
+        )
+        return "\n\n[VISUAL ANALYSIS]:\n" + completion.choices[0].message.content
+        
+    except Exception as e:
+        logger.warning(f"Groq Vision analysis failed: {e}")
+        return ""
+
+# --- Endpoints ---
+
 @app.post("/extract-recipe")
 def extract_recipe(request: ExtractRequest):
     # Support multiple env var names/locations
-    api_key = request.api_key or request.gemini_api_key or os.getenv("GROQ_API_KEY") or os.getenv("GEMINI_API_KEY")
+    api_key = request.api_key or request.gemini_api_key or os.getenv("GROQ_API_KEY")
     
     if not api_key:
         raise HTTPException(status_code=401, detail="API Key is required (GROQ_API_KEY)")
 
-    # 1. Extract raw data (ALWAYS try to get audio for better results)
+    # 1. Extract raw data
     raw_text, thumbnail_url, audio_path = get_video_data(request.url, extract_audio=True)
     
-    # 2. Transcribe if audio exists
+    # 2. Transcribe Audio (if found via yt-dlp)
     if audio_path:
         logger.info(f"Transcribing audio from {audio_path}...")
         transcript = transcribe_audio(audio_path, api_key)
         if transcript:
             raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{transcript}"
-    
-    # 3. Parse with LLM
+            
+    # 3. Vision Fallback: If text is short, try to download and SEE the video
+    # Check if raw_text is just "Unknown Recipe\nNo description available"
+    if len(raw_text) < 200 or "No description" in raw_text:
+        logger.info("Description thin. Attempting Vision Analysis...")
+        # We need the HTML to find direct URL manually if yt-dlp failed to give us a file
+        # But get_video_data consumes the attempts.
+        # Let's try to find a direct video URL using our new helper if we don't have enough data
+        # Note: We don't have the HTML here easily unless we refactor get_video_data to return it or we fetch again.
+        # Fetching HTML again is cheap.
+        try:
+             import requests
+             headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1"}
+             html_resp = requests.get(request.url, headers=headers, timeout=10)
+             if html_resp.status_code == 200:
+                 direct_url = extract_direct_video_url(request.url, html_resp.text)
+                 if direct_url:
+                     logger.info(f"Found direct video URL: {direct_url[:50]}...")
+                     # Download temp
+                     temp_vid_path = f"{tempfile.gettempdir()}/temp_vision_vid.mp4"
+                     vid_resp = requests.get(direct_url, stream=True)
+                     with open(temp_vid_path, 'wb') as f:
+                         for chunk in vid_resp.iter_content(chunk_size=8192):
+                             f.write(chunk)
+                     
+                     # Extract Audio for Whisper (if yt-dlp failed to get it)
+                     if not audio_path:
+                         # Use ffmpeg to extract audio from this temp file
+                         import subprocess
+                         temp_audio_path = f"{tempfile.gettempdir()}/temp_vision_audio.mp3"
+                         subprocess.run(["ffmpeg", "-i", temp_vid_path, "-vn", "-acodec", "libmp3lame", "-y", temp_audio_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                         transcript = transcribe_audio(temp_audio_path, api_key)
+                         if transcript:
+                             raw_text += f"\n\n[AUDIO TRANSCRIPT FROM DIRECT DL]:\n{transcript}"
+
+                     # Extract Frames for Vision
+                     frames = extract_frames(temp_vid_path)
+                     visual_desc = analyze_visuals_with_groq(frames, api_key)
+                     if visual_desc:
+                         raw_text += visual_desc
+                         
+        except Exception as e_vision:
+            logger.warning(f"Vision fallback failed: {e_vision}")
+
+    # 4. Parse with LLM (Llama 3)
     recipe_data = parse_with_llm(raw_text, api_key)
     
-    # 4. Inject the real thumbnail URL
+    # 5. Inject thumb
     recipe_data['image_url'] = thumbnail_url
     
     return recipe_data
