@@ -187,6 +187,7 @@ def get_video_data(url: str, extract_audio: bool = False):
         })
     
     # 3. Execute yt-dlp
+    info = {}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             # TRY 1: Attempt to get audio + metadata + subtitles
@@ -331,6 +332,9 @@ def get_video_data(url: str, extract_audio: bool = False):
                 raise e
 
         try:
+            if not info:
+                 raise Exception("No video information could be extracted (info dict empty).")
+            
             description = info.get('description', '')
             title = info.get('title', '')
             thumbnail = info.get('thumbnail', '')
