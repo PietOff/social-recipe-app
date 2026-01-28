@@ -413,13 +413,14 @@ def parse_with_llm(text_data: str, api_key: str):
            - Add other relevant tags (e.g. "Chicken", "Healthy", "Quick") if appropriate.
         3. If ingredient AMOUNTS are missing in the text, USE YOUR CULINARY KNOWLEDGE to estimate reasonable metric amounts (e.g. "200g" for pasta for 2 people). NEVER return empty strings for amount/unit if you can infer them.
         4. Group ingredients by component if applicable (e.g., "Sauce", "Dressing", "Main"). If no distinct groups, use "Main".
+        5. INSTRUCTIONS: Be detailed and descriptive. Do not summarize. Capture all small steps mentioned, even implied ones. We want a full cooking guide.
         
         Return ONLY valid JSON matching this schema:
         {{
             "title": "string",
             "description": "string",
             "ingredients": [{{"item": "string", "amount": "string", "unit": "string (metric)", "group": "string"}}],
-            "instructions": ["string (step 1)", "string (step 2)"],
+            "instructions": ["string (detailed step 1)", "string (detailed step 2)"],
             "prep_time": "string (e.g. 15 mins)",
             "cook_time": "string (e.g. 1 hour)",
             "servings": "string (e.g. 4 people)",
