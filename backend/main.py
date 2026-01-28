@@ -172,141 +172,141 @@ def get_video_data(url: str, extract_audio: bool = False):
         try:
             # TRY 1: Attempt to get audio + metadata + subtitles
             info = ydl.extract_info(url, download=extract_audio)
-        except yt_dlp.utils.DownloadError as e:
-            # FALLBACK 1: If audio download is blocked, try metadata + subtitles ONLY
-            if "Sign in" in str(e) or "bot" in str(e).lower():
-                logger.warning("YouTube blocked audio. Falling back to metadata + subtitles...")
-                ydl_opts['skip_download'] = True
+        except Exception as e:
+            # FALLBACK: Catch ALL errors (bot detection, generic failures, etc.) and try generic scraping
+            logger.warning(f"yt-dlp failed (Error: {str(e)}). Attempting fallbacks...")
+            
+            # Remove specific player client args that might trigger detection
+            if 'extractor_args' in ydl_opts:
+                del ydl_opts['extractor_args']
+            
+            try:
+                # FALLBACK 1 & 2: Try yt-dlp again with looser constraints (Skip download, Flat extract)
+                # Only worth trying if it's a "DownloadError" and likely bot-related, but we can try broadly or skip to HTML.
+                # For TikTok, yt-dlp retries rarely work if the first one failed hard. Let's try one generic "flat" attempt.
+                ydl_opts['extract_flat'] = True
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl_flat:
+                     info = ydl_flat.extract_info(url, download=False)
+
+            except Exception as e3:
+                # FALLBACK 3: NUCLEAR OPTION - Direct HTML Scraping
+                logger.warning("yt-dlp completely blocked/failed. Attempting direct HTML scraping...")
+                import requests
+                import re
                 
-                # Remove specific player client args that might trigger detection
-                if 'extractor_args' in ydl_opts:
-                    del ydl_opts['extractor_args']
+                # Check if it's YouTube
+                is_youtube = "youtube.com" in url or "youtu.be" in url
                 
                 try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl_fallback:
-                        info = ydl_fallback.extract_info(url, download=True)
-                except yt_dlp.utils.DownloadError as e2:
-                    # FALLBACK 2: Flat Extraction (Title/Desc only)
-                    try:
-                        if "Sign in" in str(e2) or "bot" in str(e2).lower():
-                            logger.warning("YouTube blocked metadata. Falling back to FLAT extraction...")
-                            ydl_opts['extract_flat'] = True
-                            with yt_dlp.YoutubeDL(ydl_opts) as ydl_flat:
-                                info = ydl_flat.extract_info(url, download=False)
-                        else:
-                            raise e2
-                    except Exception as e3:
-                        # FALLBACK 3: NUCLEAR OPTION - Direct HTML Scraping
-                        # If yt-dlp is completely banned, try to just get the HTML text.
-                        logger.warning("yt-dlp completely blocked. Attempting direct HTML scraping...")
-                        import requests
-                        import re
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                        "Accept-Language": "en-US,en;q=0.9",
+                    }
+                    if is_youtube:
+                        headers["Cookie"] = "SOCS=CAISEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg; CONSENT=YES+cb.20230531-04-p0.en+FX+417; PREF=f6=400&f4=4000000"
                         
+                    resp = requests.get(url, headers=headers, timeout=10)
+                    if resp.status_code != 200:
+                         raise Exception(f"HTML request failed: {resp.status_code}")
+                         
+                    html = resp.text
+                    title = "Unknown Recipe"
+                    description = "No description available"
+                    thumbnail = ""
+                    
+                    # --- Generic Scraping (Works for TikTok, Insta, etc.) ---
+                    # 1. Title
+                    og_title = re.search(r'<meta property="og:title" content="(.*?)">', html)
+                    title_tag = re.search(r'<title>(.*?)</title>', html)
+                    if og_title:
+                        title = og_title.group(1)
+                    elif title_tag:
+                        title = title_tag.group(1)
+                        if is_youtube: title = title.replace(" - YouTube", "")
+                    
+                    # 2. Description
+                    og_desc = re.search(r'<meta property="og:description" content="(.*?)">', html)
+                    name_desc = re.search(r'<meta name="description" content="(.*?)">', html)
+                    if og_desc:
+                        description = og_desc.group(1)
+                    elif name_desc:
+                        description = name_desc.group(1)
+                        
+                    # 3. Thumbnail
+                    img_match = re.search(r'<meta property="og:image" content="(.*?)">', html)
+                    if img_match:
+                        thumbnail = img_match.group(1)
+                    
+                    # --- YouTube Specific Logic (Subtitles & Invidious) ---
+                    if is_youtube:
+                        # Manual Subtitle Extraction
+                        subtitle_text = ""
                         try:
-                            headers = {
-                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                                "Accept-Language": "en-US,en;q=0.9",
-                                "Cookie": "SOCS=CAISEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg; CONSENT=YES+cb.20230531-04-p0.en+FX+417; PREF=f6=400&f4=4000000"
-                            }
-                            resp = requests.get(url, headers=headers, timeout=10)
-                            if resp.status_code == 200:
-                                html = resp.text
-                                
-                                # Robust Regex Extraction
-                                # 1. Title
-                                title = "Unknown Recipe"
-                                og_title = re.search(r'<meta property="og:title" content="(.*?)">', html)
-                                title_tag = re.search(r'<title>(.*?)</title>', html)
-                                
-                                if og_title:
-                                    title = og_title.group(1)
-                                elif title_tag:
-                                    title = title_tag.group(1).replace(" - YouTube", "")
-                                
-                                # 2. Description
-                                description = "No description available"
-                                og_desc = re.search(r'<meta property="og:description" content="(.*?)">', html)
-                                name_desc = re.search(r'<meta name="description" content="(.*?)">', html)
-                                
-                                if og_desc:
-                                    description = og_desc.group(1)
-                                elif name_desc:
-                                    description = name_desc.group(1)
-                                
-                                # 3. Thumbnail
-                                thumbnail = ""
-                                img_match = re.search(r'<meta property="og:image" content="(.*?)">', html)
-                                if img_match:
-                                    thumbnail = img_match.group(1)
-                                    
-                                # 4. Manual Subtitle Extraction (The "Golden Key")
-                                subtitle_text = ""
-                                try:
-                                    # Find JSON blob
-                                    json_match = re.search(r'var ytInitialPlayerResponse = ({.*?});', html)
-                                    if not json_match:
-                                        json_match = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?})\s*;' , html)
-                                    
-                                    if json_match:
-                                        data = json.loads(json_match.group(1))
-                                        if 'captions' in data and 'playerCaptionsTracklistRenderer' in data['captions']:
-                                            tracks = data['captions']['playerCaptionsTracklistRenderer']['captionTracks']
-                                            if tracks:
-                                                # Prefer Dutch or English, otherwise first available
-                                                selected_track = tracks[0] 
-                                                for track in tracks:
-                                                    lang = track.get('name', {}).get('simpleText', '').lower()
-                                                    if 'dutch' in lang or 'nederlands' in lang:
-                                                        selected_track = track
-                                                        break
-                                                
-                                                track_url = selected_track.get('baseUrl')
-                                                if track_url:
-                                                    logger.info(f"Fetching manual subtitles from: {track_url[:50]}...")
-                                                    sub_resp = requests.get(track_url)
-                                                    if sub_resp.status_code == 200:
-                                                        # Simple XML cleanup (remove <text start="..." dur="..."> and </text>)
-                                                        # The format is usually: <text start="0.5" dur="3.2">Hello world</text>
-                                                        # We just want "Hello world"
-                                                        raw_subs = sub_resp.text
-                                                        # Decode HTML entities
-                                                        import html as html_lib
-                                                        clean_subs = re.sub(r'<[^>]+>', ' ', raw_subs) # Remove tags
-                                                        clean_subs = html_lib.unescape(clean_subs)     # &amp; -> &
-                                                        clean_subs = re.sub(r'\s+', ' ', clean_subs).strip() # Access whitespace
-                                                        subtitle_text = f"\n\n[MANUAL SUBTITLES]:\n{clean_subs}"
-                                except Exception as e_sub:
-                                    logger.warning(f"Manual subtitle extraction failed: {e_sub}")
-
-                                # Append subtitles to description so LLM sees it
-                                if subtitle_text:
-                                    description += subtitle_text
-
-                                logger.info(f"HTML Scrape Result - Title: {title}, Desc Len: {len(description)}")
-                                
-                                # Mock the info object
-                                info = {
-                                    'title': title,
-                                    'description': description,
-                                    'thumbnail': thumbnail,
-                                    'id': 'unknown'
-                                }
-                            else:
-                                raise Exception(f"HTML request failed: {resp.status_code}")
-                                
-                            # CHECK FOR CONSENT PAGE / BAD SCRAPE
-                            if len(description) < 200 or "Before you continue" in title or "Unknown" in title:
-                                logger.warning("HTML extraction likely hit Consent Page. Trying Invidious Proxy...")
-                                info = extract_from_invidious(url.split("v=")[-1].split("&")[0])
+                            json_match = re.search(r'var ytInitialPlayerResponse = ({.*?});', html)
+                            if not json_match:
+                                json_match = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?})\s*;' , html)
                             
-                        except Exception as e4:
-                             # FALLBACK 4: Invidious Proxy (Last Request)
-                             try:
-                                logger.info("HTML scraping failed completely. Trying Invidious Proxy...")
-                                video_id = url.split("v=")[-1].split("&")[0] 
-                                info = extract_from_invidious(video_id)
-                             except Exception as e5:
-                                raise HTTPException(status_code=400, detail=f"All extraction methods failed (including Invidious). YouTube blocked us. Error: {str(e5)}")
+                            if json_match:
+                                data = json.loads(json_match.group(1))
+                                if 'captions' in data and 'playerCaptionsTracklistRenderer' in data['captions']:
+                                    tracks = data['captions']['playerCaptionsTracklistRenderer']['captionTracks']
+                                    if tracks:
+                                        selected_track = tracks[0] 
+                                        for track in tracks:
+                                            lang = track.get('name', {}).get('simpleText', '').lower()
+                                            if 'dutch' in lang or 'nederlands' in lang:
+                                                selected_track = track
+                                                break
+                                        
+                                        track_url = selected_track.get('baseUrl')
+                                        if track_url:
+                                            logger.info(f"Fetching manual subtitles from: {track_url[:50]}...")
+                                            sub_resp = requests.get(track_url)
+                                            if sub_resp.status_code == 200:
+                                                import html as html_lib
+                                                clean_subs = re.sub(r'<[^>]+>', ' ', sub_resp.text)
+                                                clean_subs = html_lib.unescape(clean_subs)
+                                                clean_subs = re.sub(r'\s+', ' ', clean_subs).strip()
+                                                subtitle_text = f"\n\n[MANUAL SUBTITLES]:\n{clean_subs}"
+                        except Exception as e_sub:
+                            logger.warning(f"Manual subtitle extraction failed: {e_sub}")
+
+                        if subtitle_text:
+                            description += subtitle_text
+
+                        # Fallback to Invidious if bad scrape
+                        if len(description) < 200 or "Before you continue" in title or "Unknown" in title:
+                            logger.warning("HTML extraction likely hit Consent Page. Trying Invidious Proxy...")
+                            info = extract_from_invidious(url.split("v=")[-1].split("&")[0])
+                        else:
+                             info = {
+                                'title': title,
+                                'description': description,
+                                'thumbnail': thumbnail,
+                                'id': 'unknown'
+                            }
+                    else:
+                        # Non-YouTube (TikTok, etc.) - Just return what we found
+                        logger.info(f"Generic HTML scrape successful for {url}")
+                        info = {
+                            'title': title,
+                            'description': description,
+                            'thumbnail': thumbnail,
+                            'id': 'unknown'
+                        }
+                    
+                except Exception as e4:
+                     # FALLBACK 4: Invidious Proxy (YouTube ONLY)
+                     if is_youtube:
+                         try:
+                            logger.info("HTML scraping failed completely. Trying Invidious Proxy...")
+                            video_id = url.split("v=")[-1].split("&")[0] 
+                            info = extract_from_invidious(video_id)
+                         except Exception as e5:
+                            raise HTTPException(status_code=400, detail=f"All extraction methods failed. YouTube blocked us. Error: {str(e5)}")
+                     else:
+                         # Non-YouTube: If generic scrape failed, we really are stuck.
+                         raise HTTPException(status_code=400, detail=f"Could not fetch video data. Platform may be blocking requests. Error: {str(e4)}")
 
             else:
                 raise e
