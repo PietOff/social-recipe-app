@@ -56,6 +56,81 @@ class Recipe(typing_extensions.TypedDict):
 
 # --- Functions ---
 
+def extract_from_invidious(video_id: str):
+    """
+    Tries to fetch video data from public Invidious instances.
+    Bypasses YouTube blocking and Consent pages.
+    """
+    instances = [
+        "https://inv.tux.pizza",
+        "https://vid.puffyan.us",
+        "https://invidious.projectsegfau.lt",
+        "https://invidious.fdn.fr"
+    ]
+    
+    for instance in instances:
+        try:
+            api_url = f"{instance}/api/v1/videos/{video_id}"
+            logger.info(f"Trying Invidious instance: {instance}")
+            resp = requests.get(api_url, timeout=10)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                
+                title = data.get('title', 'Unknown Recipe')
+                description = data.get('description', '')
+                thumbnail = ""
+                # Get high res thumbnail
+                if 'videoThumbnails' in data and data['videoThumbnails']:
+                    thumbnail = data['videoThumbnails'][0]['url']
+                else:
+                    thumbnail = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+                
+                # Fetch Subtitles
+                captions = data.get('captions', [])
+                subtitle_text = ""
+                
+                # Prioritize Dutch, then English, then Auto
+                selected_caption = None
+                for cap in captions:
+                    label = cap.get('label', '').lower()
+                    if 'dutch' in label or 'nederlands' in label:
+                        selected_caption = cap
+                        break
+                
+                if not selected_caption:
+                    for cap in captions:
+                        label = cap.get('label', '').lower()
+                        if 'english' in label:
+                            selected_caption = cap
+                            break
+                            
+                if not selected_caption and captions:
+                    selected_caption = captions[0]
+                    
+                if selected_caption:
+                    cap_url = instance + selected_caption.get('url')
+                    logger.info(f"Fetching Invidious subtitles: {cap_url}")
+                    cap_resp = requests.get(cap_url, timeout=5)
+                    if cap_resp.status_code == 200:
+                        # Invidious returns VTT. We can dump it raw or clean it.
+                        # Simple cleanup: remove timestamps?
+                        # For now, raw VTT is better than nothing, LLM can handle it.
+                        subtitle_text = f"\n\n[SUBTITLES via Invidious]:\n{cap_resp.text}"
+                        
+                return {
+                    'title': title,
+                    'description': description + subtitle_text,
+                    'thumbnail': thumbnail,
+                    'id': video_id
+                }
+                
+        except Exception as e:
+            logger.warning(f"Invidious instance {instance} failed: {e}")
+            continue
+            
+    raise Exception("All Invidious instances failed.")
+
 def get_video_data(url: str, extract_audio: bool = False):
     """
     Uses yt-dlp to extract metadata like title, description, and thumbnail.
@@ -218,8 +293,20 @@ def get_video_data(url: str, extract_audio: bool = False):
                                 }
                             else:
                                 raise Exception(f"HTML request failed: {resp.status_code}")
+                                
+                            # CHECK FOR CONSENT PAGE / BAD SCRAPE
+                            if len(description) < 200 or "Before you continue" in title or "Unknown" in title:
+                                logger.warning("HTML extraction likely hit Consent Page. Trying Invidious Proxy...")
+                                info = extract_from_invidious(url.split("v=")[-1].split("&")[0])
+                            
                         except Exception as e4:
-                             raise HTTPException(status_code=400, detail=f"All extraction methods failed. YouTube blocked us. Error: {str(e4)}")
+                             # FALLBACK 4: Invidious Proxy (Last Request)
+                             try:
+                                logger.info("HTML scraping failed completely. Trying Invidious Proxy...")
+                                video_id = url.split("v=")[-1].split("&")[0] 
+                                info = extract_from_invidious(video_id)
+                             except Exception as e5:
+                                raise HTTPException(status_code=400, detail=f"All extraction methods failed (including Invidious). YouTube blocked us. Error: {str(e5)}")
 
             else:
                 raise e
