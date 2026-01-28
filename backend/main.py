@@ -463,6 +463,10 @@ def extract_direct_video_url(url: str, html: str) -> Optional[str]:
     """
     Attempts to find a direct .mp4 URL from the HTML/JSON of TikTok/Instagram.
     """
+    # SKIP YouTube: We use Invidious/yt-dlp for that. Direct parsing is harder and often blocked.
+    if "youtube.com" in url or "youtu.be" in url:
+        return None
+
     try:
         # 1. Instagram / Generic OG
         og_video = re.search(r'<meta property="og:video" content="(.*?)"', html)
