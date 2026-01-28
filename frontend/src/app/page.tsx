@@ -12,7 +12,6 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [savedRecipes, setSavedRecipes] = useState<Recipe[]>([]);
-  const [activeTab, setActiveTab] = useState<'new' | 'saved'>('new');
   const [searchQuery, setSearchQuery] = useState('');
 
   // Helper to migrate legacy single-category recipes
@@ -83,216 +82,176 @@ export default function Home() {
     }
   };
 
+  // --- FILTERING LOGIC ---
+  const [selectedCategory, setSelectedCategory] = useState("All");
+
+  const MEAL_TYPES = ['Breakfast', 'Brunch', 'Lunch', 'Dinner', 'Snack', 'Dessert'];
+  const DISH_TYPES = ['Burger', 'Pizza', 'Pasta', 'Sandwich', 'Wrap', 'Tacos', 'Bowl', 'Salad', 'Soup', 'Rice', 'Stew', 'Curry', 'Roast', 'Bake', 'Meat', 'Fish', 'Vegetarian', 'Vegan'];
+
+  // Combine categories
+  const filteredRecipes = savedRecipes.filter(r => {
+    // 1. Search Query
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      const inTitle = r.title?.toLowerCase().includes(q);
+      const inDesc = r.description?.toLowerCase().includes(q);
+      const inTags = (r.tags || []).some(t => t.toLowerCase().includes(q)) || (r.category && r.category.toLowerCase().includes(q));
+      if (!inTitle && !inDesc && !inTags) return false;
+    }
+    // 2. Category Filter
+    if (selectedCategory !== "All") {
+      const tags = (r.tags || (r.category ? categoryToTags(r.category) : [])).map(t => t.toLowerCase());
+      return tags.includes(selectedCategory.toLowerCase());
+    }
+    return true;
+  });
+
   return (
     <main className={styles.main}>
       <div className={styles.container}>
         <header className={styles.header}>
-          <h1 className={styles.logo}>Chef<span className={styles.highlight}>Social</span></h1>
-          <p className={styles.subtitle}>Turn TikToks into tasty texts.</p>
-
-          <div className={styles.tabs} style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1rem' }}>
-            <button
-              onClick={() => setActiveTab('new')}
-              className={activeTab === 'new' ? styles.activeTab : styles.tab}
-              style={{
-                background: activeTab === 'new' ? '#FF6B6B' : 'transparent',
-                border: '1px solid #FF6B6B',
-                color: '#fff',
-                padding: '8px 16px',
-                borderRadius: '20px',
-                cursor: 'pointer'
-              }}
-            >
-              New Recipe
-            </button>
-            <button
-              onClick={() => setActiveTab('saved')}
-              className={activeTab === 'saved' ? styles.activeTab : styles.tab}
-              style={{
-                background: activeTab === 'saved' ? '#FF6B6B' : 'transparent',
-                border: '1px solid #FF6B6B',
-                color: '#fff',
-                padding: '8px 16px',
-                borderRadius: '20px',
-                cursor: 'pointer'
-              }}
-            >
-              My Cookbook ({savedRecipes.length})
-            </button>
+          <div className={styles.logoAndTitle}>
+            <h1 className={styles.logo}>Chef<span className={styles.highlight}>Social</span></h1>
           </div>
+          <p className={styles.subtitle}>Turn TikToks into tasty texts.</p>
         </header>
 
-        {activeTab === 'new' ? (
-          <>
-            <form onSubmit={handleExtract} className={`${styles.form} glass-panel`}>
-              <div className={styles.inputGroup}>
-                <input
-                  type="url"
-                  placeholder="Paste TikTok, Instagram or YouTube URL..."
-                  className="input-field"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  required
-                />
+        <div className={styles.mainContent}>
+          {/* 1. EXTRACTION FORM */}
+          <form onSubmit={handleExtract} className={styles.form}>
+            <input
+              type="url"
+              placeholder="Paste TikTok, Instagram or YouTube link..."
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              className={styles.input}
+              required
+            />
+            <button type="submit" disabled={loading} className={styles.button}>
+              {loading ? 'Extracting...' : 'Get Recipe'}
+            </button>
+          </form>
+
+          {error && <div className={styles.error}>{error}</div>}
+
+          {/* 2. NEW RECIPE CARD (Inline) */}
+          {recipe && (
+            <div className={styles.recipeCard}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+                <h2 className={styles.recipeTitle}>{recipe.title}</h2>
+                <button onClick={() => setRecipe(null)} style={{ background: 'none', border: 'none', color: '#fff', opacity: 0.5, cursor: 'pointer', fontSize: '1.5rem' }}>×</button>
+              </div>
+              <p className={styles.recipeDesc}>{recipe.description}</p>
+
+              {/* Tags */}
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', margin: '10px 0' }}>
+                {(recipe.tags || (recipe.category ? categoryToTags(recipe.category) : [])).map(tag => (
+                  <span key={tag} style={{ background: 'rgba(255,255,255,0.2)', padding: '4px 10px', borderRadius: '12px', fontSize: '0.8rem' }}>
+                    {tag}
+                  </span>
+                ))}
               </div>
 
-              <button type="submit" className="primary-button" disabled={loading}>
-                {loading ? 'Cooking...' : 'Get Recipe'}
+              <div className={styles.metaGrid}>
+                <div className={styles.metaItem}>⏱ {recipe.prep_time || '--'}</div>
+                <div className={styles.metaItem}>🔥 {recipe.cook_time || '--'}</div>
+                <div className={styles.metaItem}>👥 {recipe.servings || '--'}</div>
+              </div>
+
+              <div className={styles.splitSection}>
+                <div className={styles.ingredients}>
+                  <h3>Ingredients</h3>
+                  <ul>
+                    {recipe.ingredients.map((ing, i) => (
+                      <li key={i}>
+                        <b>{ing.amount} {ing.unit}</b> {ing.item} {ing.group && <span style={{ opacity: 0.6 }}>({ing.group})</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div className={styles.instructions}>
+                  <h3>Instructions</h3>
+                  <ol>
+                    {recipe.instructions.map((step, i) => (
+                      <li key={i}>{step}</li>
+                    ))}
+                  </ol>
+                </div>
+              </div>
+
+              <button onClick={() => saveRecipe(recipe)} disabled={savedRecipes.some(r => r.title === recipe.title)} className={styles.saveButton}>
+                {savedRecipes.some(r => r.title === recipe.title) ? 'Saved to Cookbook!' : 'Save to Cookbook'}
               </button>
-            </form>
+            </div>
+          )}
 
-            {error && (
-              <div className={styles.error}>
-                {error}
-              </div>
-            )}
-
-            {recipe && (
-              <RecipeCard
-                recipe={recipe}
-                onSave={saveRecipe}
-                isSaved={savedRecipes.some(r => r.title === recipe!.title)}
-              />
-            )}
-          </>
-        ) : (
-          <div style={{ paddingBottom: '80px' }}>
-            <div style={{ padding: '0 1rem', marginBottom: '1rem' }}>
-              <h2 className="section-title">My Cookbook</h2>
+          {/* 3. MY COOKBOOK SECTION */}
+          <div className={styles.cookbookSection}>
+            <div className={styles.cookbookHeader}>
+              <h2>My Cookbook ({savedRecipes.length})</h2>
               <input
                 type="text"
-                placeholder="Search (e.g. 'Kip', 'Pasta', 'Dinner')..."
+                placeholder="Search recipes..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                style={{
-                  width: '100%',
-                  padding: '12px 16px',
-                  borderRadius: '12px',
-                  border: '1px solid #ddd',
-                  fontSize: '1rem',
-                  boxShadow: '0 2px 8px rgba(0,0,0,0.05)',
-                  outline: 'none',
-                  background: '#f8f9fa'
-                }}
+                className={styles.searchInput}
               />
             </div>
 
-            {savedRecipes.length === 0 ? (
-              <p style={{ padding: '0 1rem', color: '#666' }}>No recipes saved yet.</p>
-            ) : (
-              (() => {
-                // Filter recipes based on search query
-                const filteredRecipes = savedRecipes.filter(r => {
-                  if (!searchQuery) return true;
-                  const q = searchQuery.toLowerCase();
-                  // Search in title, tags, and keywords (EN/NL)
-                  const inTitle = r.title.toLowerCase().includes(q);
-                  const inTags = r.tags?.some(t => t.toLowerCase().includes(q));
-                  const inKeywords = r.keywords?.some(k => k.toLowerCase().includes(q));
-                  return inTitle || inTags || inKeywords;
-                });
+            {/* Filter Chips */}
+            <div className={styles.filterContainer}>
+              <button
+                className={`${styles.filterChip} ${selectedCategory === "All" ? styles.filterChipActive : ''}`}
+                onClick={() => setSelectedCategory("All")}
+              >
+                All
+              </button>
+              {MEAL_TYPES.map(cat => (
+                <button
+                  key={cat}
+                  className={`${styles.filterChip} ${selectedCategory === cat ? styles.filterChipActive : ''}`}
+                  onClick={() => setSelectedCategory(cat)}
+                >
+                  {cat}
+                </button>
+              ))}
+              <div style={{ width: '1px', height: '24px', background: 'rgba(255,255,255,0.2)', margin: '0 4px' }}></div>
+              {DISH_TYPES.map(cat => (
+                <button
+                  key={cat}
+                  className={`${styles.filterChip} ${selectedCategory === cat ? styles.filterChipActive : ''}`}
+                  onClick={() => setSelectedCategory(cat)}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
 
-                if (filteredRecipes.length === 0) {
-                  return <p style={{ padding: '0 1rem', color: '#666' }}>No recipes found for "{searchQuery}".</p>;
-                }
-
-                // --- GROUPING LOGIC ---
-
-                const MEAL_TYPES = ['Breakfast', 'Brunch', 'Lunch', 'Dinner', 'Snack', 'Dessert'];
-                // Priority list for Dish Types (Specific > Generic)
-                const DISH_TYPES = [
-                  'Burger', 'Pizza', 'Pasta', 'Sandwich', 'Wrap', 'Tacos', 'Bowl',
-                  'Salad', 'Soup', 'Rice', 'Stew', 'Curry', 'Roast', 'Bake', 'Meat', 'Fish',
-                  'Vegetarian', 'Vegan'
-                ];
-
-                const mealSections: { title: string, recipes: Recipe[] }[] = [];
-                const dishSections: { title: string, recipes: Recipe[] }[] = [];
-
-                // 1. MEAL TYPES SECTION (Recipes can appear in multiple meal types)
-                MEAL_TYPES.forEach(meal => {
-                  const matching = filteredRecipes.filter(r => {
-                    const tags = r.tags || (r.category ? [r.category] : []);
-                    return tags.some(t => t.toLowerCase() === meal.toLowerCase());
-                  });
-                  if (matching.length > 0) mealSections.push({ title: meal, recipes: matching });
-                });
-
-                // 2. DISH TYPES SECTION (Mutually Exclusive per constraints)
-                const dishMap: Record<string, Recipe[]> = {};
-                const otherRecipes: Recipe[] = [];
-
-                filteredRecipes.forEach(r => {
-                  const tags = (r.tags || (r.category ? categoryToTags(r.category) : [])).map(t => t.toLowerCase());
-
-                  // Find the FIRST matching dish type from the priority list
-                  const primaryDish = DISH_TYPES.find(d => tags.includes(d.toLowerCase()));
-
-                  if (primaryDish) {
-                    if (!dishMap[primaryDish]) dishMap[primaryDish] = [];
-                    dishMap[primaryDish].push(r);
-                  } else {
-                    // Only add to "Other" if it is NOT in any meal type either? 
-                    // User said "grids for meal type. Then underneath that... dish type".
-                    // Usually "Other" implies not fitting in the specific buckets above.
-                    // But since we have a split view, let's put it in "Other Discovers" at the bottom if it doesn't match a DISH type.
-                    otherRecipes.push(r);
-                  }
-                });
-
-                // Convert map to sections array based on DISH_TYPES order
-                DISH_TYPES.forEach(dish => {
-                  if (dishMap[dish] && dishMap[dish].length > 0) {
-                    dishSections.push({ title: dish, recipes: dishMap[dish] });
-                  }
-                });
-
-                if (otherRecipes.length > 0) {
-                  dishSections.push({ title: 'Other Discovers', recipes: otherRecipes });
-                }
-
-                return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-
-                    {/* SECTION 1: MEAL TYPES */}
-                    {mealSections.length > 0 && (
-                      <div className="animate-fade-in" style={{ padding: '0 0.5rem' }}>
-                        <h3 style={{ marginLeft: '1rem', marginBottom: '0.5rem', opacity: 0.7, textTransform: 'uppercase', fontSize: '0.8rem', letterSpacing: '1px' }}>By Meal</h3>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                          {mealSections.map(section => (
-                            <CategoryAccordion
-                              key={`meal-${section.title}`}
-                              title={section.title}
-                              recipes={section.recipes}
-                              onSelect={(r) => { setRecipe(r); setActiveTab('new'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* SECTION 2: DISH TYPES */}
-                    {dishSections.length > 0 && (
-                      <div className="animate-fade-in" style={{ padding: '0 0.5rem' }}>
-                        <h3 style={{ marginLeft: '1rem', marginBottom: '0.5rem', opacity: 0.7, textTransform: 'uppercase', fontSize: '0.8rem', letterSpacing: '1px' }}>By Dish</h3>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                          {dishSections.map(section => (
-                            <CategoryAccordion
-                              key={`dish-${section.title}`}
-                              title={section.title}
-                              recipes={section.recipes}
-                              onSelect={(r) => { setRecipe(r); setActiveTab('new'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    )}
+            {/* Grid View */}
+            <div className={styles.cookbookGrid}>
+              {filteredRecipes.map((r, idx) => (
+                <div key={idx} className={styles.cookbookItem} onClick={() => { setRecipe(r); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
+                  <div className={styles.cookbookImage} style={{ backgroundImage: r.image_url ? `url(${r.image_url})` : 'none' }}>
+                    {!r.image_url && <span>🍳</span>}
                   </div>
-                );
-              })()
-            )}
+                  <div className={styles.cookbookContent}>
+                    <h4>{r.title}</h4>
+                    <div className={styles.tagsRow}>
+                      {(r.tags || (r.category ? categoryToTags(r.category) : [])).slice(0, 3).map(t => (
+                        <span key={t}>{t}</span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {filteredRecipes.length === 0 && (
+                <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>
+                  No recipes found. Try adjusting the search or filter.
+                </p>
+              )}
+            </div>
           </div>
-        )}
+        </div>
       </div>
     </main>
   );
