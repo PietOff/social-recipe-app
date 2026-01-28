@@ -93,6 +93,7 @@ def get_video_data(url: str, extract_audio: bool = False):
         })
     
     # 3. Execute yt-dlp
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             # TRY 1: Attempt to get audio + metadata + subtitles
             info = ydl.extract_info(url, download=extract_audio)
