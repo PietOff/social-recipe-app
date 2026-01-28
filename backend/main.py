@@ -135,14 +135,35 @@ def get_video_data(url: str, extract_audio: bool = False):
                             resp = requests.get(url, headers=headers, timeout=10)
                             if resp.status_code == 200:
                                 html = resp.text
-                                # Simple Regex extraction
-                                title_match = re.search(r'<meta property="og:title" content="(.*?)">', html)
-                                desc_match = re.search(r'<meta property="og:description" content="(.*?)">', html)
-                                img_match = re.search(r'<meta property="og:image" content="(.*?)">', html)
                                 
-                                title = title_match.group(1) if title_match else "Unknown Recipe"
-                                description = desc_match.group(1) if desc_match else "No description available"
-                                thumbnail = img_match.group(1) if img_match else ""
+                                # Robust Regex Extraction
+                                # 1. Title
+                                title = "Unknown Recipe"
+                                og_title = re.search(r'<meta property="og:title" content="(.*?)">', html)
+                                title_tag = re.search(r'<title>(.*?)</title>', html)
+                                
+                                if og_title:
+                                    title = og_title.group(1)
+                                elif title_tag:
+                                    title = title_tag.group(1).replace(" - YouTube", "")
+                                
+                                # 2. Description
+                                description = "No description available"
+                                og_desc = re.search(r'<meta property="og:description" content="(.*?)">', html)
+                                name_desc = re.search(r'<meta name="description" content="(.*?)">', html)
+                                
+                                if og_desc:
+                                    description = og_desc.group(1)
+                                elif name_desc:
+                                    description = name_desc.group(1)
+                                
+                                # 3. Thumbnail
+                                thumbnail = ""
+                                img_match = re.search(r'<meta property="og:image" content="(.*?)">', html)
+                                if img_match:
+                                    thumbnail = img_match.group(1)
+                                    
+                                logger.info(f"HTML Scrape Result - Title: {title}, Desc Len: {len(description)}")
                                 
                                 # Mock the info object
                                 info = {
