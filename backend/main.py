@@ -152,6 +152,9 @@ def get_video_data(url: str, extract_audio: bool = False):
                                 og_desc = re.search(r'<meta property="og:description" content="(.*?)">', html)
                                 name_desc = re.search(r'<meta name="description" content="(.*?)">', html)
                                 
+                                if og_desc:
+                                    description = og_desc.group(1)
+                                elif name_desc:
                                     description = name_desc.group(1)
                                 
                                 # 3. Thumbnail
