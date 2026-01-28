@@ -131,11 +131,29 @@ def extract_from_invidious(video_id: str):
             
     raise Exception("All Invidious instances failed.")
 
+def resolve_redirects(url: str) -> str:
+    """
+    Expands short URLs (like vm.tiktok.com) to their full canonical form.
+    This helps yt-dlp which sometimes struggles with short link redirects.
+    """
+    try:
+        # TikTok specific: they often block HEAD requests, so use GET with stream=True
+        headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1"}
+        resp = requests.get(url, headers=headers, allow_redirects=True, stream=True, timeout=5)
+        return resp.url
+    except Exception as e:
+        logger.warning(f"URL resolution failed: {e}")
+        return url
+
 def get_video_data(url: str, extract_audio: bool = False):
     """
     Uses yt-dlp to extract metadata like title, description, and thumbnail.
     Optionally downloads audio for transcription.
     """
+    # 0. Resolve Short URLs (Crucial for TikTok)
+    url = resolve_redirects(url)
+    logger.info(f"Processing URL: {url}")
+
     # 1. Base options for metadata
     ydl_opts = {
         'skip_download': True,
