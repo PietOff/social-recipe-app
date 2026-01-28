@@ -130,7 +130,8 @@ def get_video_data(url: str, extract_audio: bool = False):
                         try:
                             headers = {
                                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                                "Accept-Language": "en-US,en;q=0.9"
+                                "Accept-Language": "en-US,en;q=0.9",
+                                "Cookie": "SOCS=CAISEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg; CONSENT=YES+cb.20230531-04-p0.en+FX+417; PREF=f6=400&f4=4000000"
                             }
                             resp = requests.get(url, headers=headers, timeout=10)
                             if resp.status_code == 200:
