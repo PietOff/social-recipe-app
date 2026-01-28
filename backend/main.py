@@ -412,7 +412,8 @@ def parse_with_llm(text_data: str, api_key: str):
         Your goal is to extract a structured recipe from it.
         
         CRITICAL RULES:
-        1. Convert ALL units to METRIC (ml, l, g, kg). Do NOT use cups, oz, lbs, or spoons if possible (use grams/ml).
+        1. Convert WEIGHT/VOLUME to METRIC (ml, l, g, kg). Do NOT use cups, oz, lbs.
+           HOWEVER: Keep natural counts for discrete items (e.g. "3 cloves garlic", "2 onions", "1 pinch"). Do NOT convert these to grams (e.g. NEVER say "3g garlic").
         2. Analyze the recipe and assign multiple TAGS from these lists:
            - MEAL TYPES: "Breakfast", "Brunch", "Lunch", "Dinner", "Snack", "Dessert".
            - DISH TYPES: "Sandwich", "Pasta", "Pizza", "Salad", "Soup", "Rice", "Meat", "Fish", "Vegetarian", "Vegan", "Wrap", "Bowl", "Tacos", "Burger", "Stew", "Curry", "Roast", "Bake".
