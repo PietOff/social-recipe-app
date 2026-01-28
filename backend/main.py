@@ -111,15 +111,53 @@ def get_video_data(url: str, extract_audio: bool = False):
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl_fallback:
                         info = ydl_fallback.extract_info(url, download=True)
                 except yt_dlp.utils.DownloadError as e2:
-                    # FALLBACK 2: ULTIMATE FALLBACK - Flat Extraction (Title/Desc only)
-                    # This often bypasses the "Sign in" check entirely because it doesn't resolve video URLs
-                    if "Sign in" in str(e2) or "bot" in str(e2).lower():
-                        logger.warning("YouTube blocked metadata. Falling back to FLAT extraction...")
-                        ydl_opts['extract_flat'] = True
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl_flat:
-                            info = ydl_flat.extract_info(url, download=False)
-                    else:
-                        raise e2
+                    # FALLBACK 2: Flat Extraction (Title/Desc only)
+                    try:
+                        if "Sign in" in str(e2) or "bot" in str(e2).lower():
+                            logger.warning("YouTube blocked metadata. Falling back to FLAT extraction...")
+                            ydl_opts['extract_flat'] = True
+                            with yt_dlp.YoutubeDL(ydl_opts) as ydl_flat:
+                                info = ydl_flat.extract_info(url, download=False)
+                        else:
+                            raise e2
+                    except Exception as e3:
+                        # FALLBACK 3: NUCLEAR OPTION - Direct HTML Scraping
+                        # If yt-dlp is completely banned, try to just get the HTML text.
+                        logger.warning("yt-dlp completely blocked. Attempting direct HTML scraping...")
+                        import requests
+                        import re
+                        
+                        try:
+                            headers = {
+                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                                "Accept-Language": "en-US,en;q=0.9"
+                            }
+                            resp = requests.get(url, headers=headers, timeout=10)
+                            if resp.status_code == 200:
+                                html = resp.text
+                                # Simple Regex extraction
+                                title_match = re.search(r'<meta property="og:title" content="(.*?)">', html)
+                                desc_match = re.search(r'<meta property="og:description" content="(.*?)">', html)
+                                img_match = re.search(r'<meta property="og:image" content="(.*?)">', html)
+                                
+                                title = title_match.group(1) if title_match else "Unknown Recipe"
+                                description = desc_match.group(1) if desc_match else "No description available"
+                                thumbnail = img_match.group(1) if img_match else ""
+                                
+                                # Mock the info object
+                                info = {
+                                    'title': title,
+                                    'description': description,
+                                    'thumbnail': thumbnail,
+                                    'id': 'unknown'
+                                }
+                            else:
+                                raise Exception(f"HTML request failed: {resp.status_code}")
+                        except Exception as e4:
+                             raise HTTPException(status_code=400, detail=f"All extraction methods failed. YouTube blocked us. Error: {str(e4)}")
+
+            else:
+                raise e
             else:
                 raise e
 
