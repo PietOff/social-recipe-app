@@ -93,17 +93,32 @@ def get_video_data(url: str, extract_audio: bool = False):
         })
     
     # 3. Execute yt-dlp
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             # TRY 1: Attempt to get audio + metadata + subtitles
             info = ydl.extract_info(url, download=extract_audio)
         except yt_dlp.utils.DownloadError as e:
-            # FALLBACK: If audio download is blocked, try metadata + subtitles ONLY
-            if extract_audio and "Sign in" in str(e):
+            # FALLBACK 1: If audio download is blocked, try metadata + subtitles ONLY
+            if "Sign in" in str(e) or "bot" in str(e).lower():
                 logger.warning("YouTube blocked audio. Falling back to metadata + subtitles...")
                 ydl_opts['skip_download'] = True
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl_fallback:
-                    info = ydl_fallback.extract_info(url, download=True) # download=True needed for subtitles/metadata
+                
+                # Remove specific player client args that might trigger detection
+                if 'extractor_args' in ydl_opts:
+                    del ydl_opts['extractor_args']
+                
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl_fallback:
+                        info = ydl_fallback.extract_info(url, download=True)
+                except yt_dlp.utils.DownloadError as e2:
+                    # FALLBACK 2: ULTIMATE FALLBACK - Flat Extraction (Title/Desc only)
+                    # This often bypasses the "Sign in" check entirely because it doesn't resolve video URLs
+                    if "Sign in" in str(e2) or "bot" in str(e2).lower():
+                        logger.warning("YouTube blocked metadata. Falling back to FLAT extraction...")
+                        ydl_opts['extract_flat'] = True
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl_flat:
+                            info = ydl_flat.extract_info(url, download=False)
+                    else:
+                        raise e2
             else:
                 raise e
 
@@ -113,8 +128,8 @@ def get_video_data(url: str, extract_audio: bool = False):
             thumbnail = info.get('thumbnail', '')
             video_id = info.get('id')
             
-            # Check for audio file if we asked for it AND download succeeded
-            if extract_audio and not ydl_opts.get('skip_download'):
+            # Check for audio file if we asked for it AND download succeeded (and not flat extraction)
+            if extract_audio and not ydl_opts.get('skip_download') and not ydl_opts.get('extract_flat'):
                 # yt-dlp with postprocessor usually appends .mp3
                 potential_path = Path(f'{temp_dir}/{video_id}.mp3')
                 if potential_path.exists():
@@ -140,7 +155,7 @@ def get_video_data(url: str, extract_audio: bool = False):
             return combined_text, thumbnail, audio_path
         except Exception as e:
             logger.error(f"yt-dlp processing error: {str(e)}")
-            raise HTTPException(status_code=400, detail=f"Could not processing video data: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Could not process video data: {str(e)}")
 
 def transcribe_audio(audio_path: str, api_key: str):
     """
