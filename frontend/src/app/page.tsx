@@ -15,6 +15,9 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<'new' | 'saved'>('new');
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Helper to migrate legacy single-category recipes
+  const categoryToTags = (cat: string) => [cat];
+
   // Load saved recipes on mount
   React.useEffect(() => {
     const saved = localStorage.getItem('chefSocial_cookbook');
