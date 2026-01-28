@@ -152,9 +152,6 @@ def get_video_data(url: str, extract_audio: bool = False):
                                 og_desc = re.search(r'<meta property="og:description" content="(.*?)">', html)
                                 name_desc = re.search(r'<meta name="description" content="(.*?)">', html)
                                 
-                                if og_desc:
-                                    description = og_desc.group(1)
-                                elif name_desc:
                                     description = name_desc.group(1)
                                 
                                 # 3. Thumbnail
@@ -163,6 +160,49 @@ def get_video_data(url: str, extract_audio: bool = False):
                                 if img_match:
                                     thumbnail = img_match.group(1)
                                     
+                                # 4. Manual Subtitle Extraction (The "Golden Key")
+                                subtitle_text = ""
+                                try:
+                                    # Find JSON blob
+                                    json_match = re.search(r'var ytInitialPlayerResponse = ({.*?});', html)
+                                    if not json_match:
+                                        json_match = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?})\s*;' , html)
+                                    
+                                    if json_match:
+                                        data = json.loads(json_match.group(1))
+                                        if 'captions' in data and 'playerCaptionsTracklistRenderer' in data['captions']:
+                                            tracks = data['captions']['playerCaptionsTracklistRenderer']['captionTracks']
+                                            if tracks:
+                                                # Prefer Dutch or English, otherwise first available
+                                                selected_track = tracks[0] 
+                                                for track in tracks:
+                                                    lang = track.get('name', {}).get('simpleText', '').lower()
+                                                    if 'dutch' in lang or 'nederlands' in lang:
+                                                        selected_track = track
+                                                        break
+                                                
+                                                track_url = selected_track.get('baseUrl')
+                                                if track_url:
+                                                    logger.info(f"Fetching manual subtitles from: {track_url[:50]}...")
+                                                    sub_resp = requests.get(track_url)
+                                                    if sub_resp.status_code == 200:
+                                                        # Simple XML cleanup (remove <text start="..." dur="..."> and </text>)
+                                                        # The format is usually: <text start="0.5" dur="3.2">Hello world</text>
+                                                        # We just want "Hello world"
+                                                        raw_subs = sub_resp.text
+                                                        # Decode HTML entities
+                                                        import html as html_lib
+                                                        clean_subs = re.sub(r'<[^>]+>', ' ', raw_subs) # Remove tags
+                                                        clean_subs = html_lib.unescape(clean_subs)     # &amp; -> &
+                                                        clean_subs = re.sub(r'\s+', ' ', clean_subs).strip() # Access whitespace
+                                                        subtitle_text = f"\n\n[MANUAL SUBTITLES]:\n{clean_subs}"
+                                except Exception as e_sub:
+                                    logger.warning(f"Manual subtitle extraction failed: {e_sub}")
+
+                                # Append subtitles to description so LLM sees it
+                                if subtitle_text:
+                                    description += subtitle_text
+
                                 logger.info(f"HTML Scrape Result - Title: {title}, Desc Len: {len(description)}")
                                 
                                 # Mock the info object

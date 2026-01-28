@@ -32,10 +32,32 @@ try:
         name_desc_match = re.search(r'<meta name="description" content="(.*?)">', html)
         print(f"name='description' match: {name_desc_match.group(1) if name_desc_match else 'NONE'}")
         
-        # Test 5: Description in JSON-LD (often present!)
-        # simplistic check
-        if "description" in html[:1000]:
-             print("Word 'description' found in first 1000 chars")
+        # Test 5: Subtitles in ytInitialPlayerResponse
+        import json
+        print("\n--- Subtitle Check ---")
+        
+        # Regex to find the player response JSON
+        # It usually looks like: var ytInitialPlayerResponse = {...};
+        json_match = re.search(r'var ytInitialPlayerResponse = ({.*?});', html)
+        if not json_match:
+            # Sometimes it's without 'var' or slightly different
+            json_match = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?})\s*;' , html)
+            
+        if json_match:
+            try:
+                data = json.loads(json_match.group(1))
+                if 'captions' in data and 'playerCaptionsTracklistRenderer' in data['captions']:
+                    tracks = data['captions']['playerCaptionsTracklistRenderer']['captionTracks']
+                    print(f"Found {len(tracks)} caption tracks!")
+                    first_track = tracks[0]
+                    print(f"Track 1 Language: {first_track.get('name', {}).get('simpleText')}")
+                    print(f"Track 1 URL: {first_track.get('baseUrl')[:50]}...")
+                else:
+                    print("JSON found but no 'captions' field.")
+            except Exception as e:
+                print(f"JSON Parse Error: {e}")
+        else:
+            print("ytInitialPlayerResponse NOT found in HTML")
 
     else:
         print("Failed to fetch")
