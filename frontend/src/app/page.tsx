@@ -213,13 +213,27 @@ export default function Home() {
                   <div className={styles.splitSection}>
                     <div className={styles.ingredients}>
                       <h3>Ingredients</h3>
-                      <ul>
-                        {recipe.ingredients.map((ing, i) => (
-                          <li key={i}>
-                            <b>{ing.amount} {ing.unit}</b> {ing.item} {ing.group && <span style={{ opacity: 0.6 }}>({ing.group})</span>}
-                          </li>
-                        ))}
-                      </ul>
+                      {Object.entries(
+                        recipe.ingredients.reduce((acc, ing) => {
+                          const group = ing.group || 'Main';
+                          if (!acc[group]) acc[group] = [];
+                          acc[group].push(ing);
+                          return acc;
+                        }, {} as Record<string, typeof recipe.ingredients>)
+                      ).map(([group, items]) => (
+                        <div key={group} style={{ marginBottom: '1rem' }}>
+                          <h4 style={{ margin: '0.5rem 0', color: '#FF8E53', fontSize: '0.95rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                            {group}
+                          </h4>
+                          <ul>
+                            {items.map((ing, i) => (
+                              <li key={i}>
+                                <b>{ing.amount} {ing.unit}</b> {ing.item}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
                     </div>
                     <div className={styles.instructions}>
                       <h3>Instructions</h3>
