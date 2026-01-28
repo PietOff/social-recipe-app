@@ -158,8 +158,6 @@ def get_video_data(url: str, extract_audio: bool = False):
 
             else:
                 raise e
-            else:
-                raise e
 
         try:
             description = info.get('description', '')
