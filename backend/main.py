@@ -117,15 +117,29 @@ def extract_from_invidious(video_id: str):
                     cap_resp = requests.get(cap_url, timeout=5)
                     if cap_resp.status_code == 200:
                         # Invidious returns VTT. We can dump it raw or clean it.
-                        # Simple cleanup: remove timestamps?
                         # For now, raw VTT is better than nothing, LLM can handle it.
                         subtitle_text = f"\n\n[SUBTITLES via Invidious]:\n{cap_resp.text}"
-                        
+                
+                # Extract Audio Stream URL (for fallback downloading)
+                audio_url = None
+                # Try adaptive formats (audio only) first
+                if 'adaptiveFormats' in data:
+                    for fmt in data['adaptiveFormats']:
+                        if 'audio' in fmt.get('type', '') or fmt.get('audioQuality'):
+                           audio_url = fmt.get('url')
+                           break
+                # Fallback to standard formats
+                if not audio_url and 'formatStreams' in data:
+                     for fmt in data['formatStreams']:
+                        audio_url = fmt.get('url') # Just take the first one (usually lowest quality video+audio)
+                        break
+
                 return {
                     'title': title,
                     'description': description + subtitle_text,
                     'thumbnail': thumbnail,
-                    'id': video_id
+                    'id': video_id,
+                    'audio_url': audio_url
                 }
                 
         except Exception as e:
@@ -324,6 +338,27 @@ def get_video_data(url: str, extract_audio: bool = False):
                             logger.info("HTML scraping failed completely. Trying Invidious Proxy...")
                             video_id = url.split("v=")[-1].split("&")[0] 
                             info = extract_from_invidious(video_id)
+                            
+                            # Manual Audio Download from Invidious if needed
+                            if extract_audio and info.get('audio_url') and not audio_path:
+                                try:
+                                    logger.info("Downloading audio directly from Invidious stream...")
+                                    inv_audio_url = info['audio_url']
+                                    # Use a distinct temp path
+                                    temp_inv_path = f"{tempfile.gettempdir()}/{video_id}_inv.mp3"
+                                    
+                                    # Stream download
+                                    r_inv = requests.get(inv_audio_url, stream=True, timeout=20)
+                                    if r_inv.status_code == 200:
+                                        with open(temp_inv_path, 'wb') as f:
+                                            for chunk in r_inv.iter_content(chunk_size=8192):
+                                                f.write(chunk)
+                                        audio_path = temp_inv_path
+                                        logger.info(f"Invidious audio saved to {audio_path}")
+                                    else:
+                                         logger.warning(f"Invidious audio stream fetch failed: {r_inv.status_code}")
+                                except Exception as e_inv_dl:
+                                    logger.warning(f"Invidious manual audio download failed: {e_inv_dl}")
                          except Exception as e5:
                             raise HTTPException(status_code=400, detail=f"All extraction methods failed. YouTube blocked us. Error: {str(e5)}")
                      else:
