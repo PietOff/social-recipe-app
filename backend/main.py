@@ -415,9 +415,9 @@ def parse_with_llm(text_data: str, api_key: str):
         1. Convert WEIGHT/VOLUME to METRIC (ml, l, g, kg). Do NOT use cups, oz, lbs.
            HOWEVER: Keep natural counts for discrete items (e.g. "3 cloves garlic", "2 onions", "1 pinch"). Do NOT convert these to grams (e.g. NEVER say "3g garlic").
         2. Analyze the recipe and assign multiple TAGS from these lists:
-           - MEAL TYPES: "Breakfast", "Brunch", "Lunch", "Dinner", "Snack", "Dessert".
-           - DISH TYPES: "Sandwich", "Pasta", "Pizza", "Salad", "Soup", "Rice", "Meat", "Fish", "Vegetarian", "Vegan", "Wrap", "Bowl", "Tacos", "Burger", "Stew", "Curry", "Roast", "Bake".
-           - Add other relevant tags (e.g. "Chicken", "Healthy", "Quick") if appropriate.
+           - MEAL TYPES: "Breakfast", "Brunch", "Lunch", "Dinner", "Snack", "Dessert", "Appetizer", "Drink".
+           - DISH TYPES: "Airfryer", "BBQ", "Slow Cooker", "Pasta", "Pizza", "Burger", "Sandwich", "Wrap", "Tacos", "Salad", "Bowl", "Soup", "Stew", "Curry", "Rice", "Meat", "Fish", "Chicken", "Vegetarian", "Vegan", "Low-Carb", "High-Protein", "Smoothie", "Cocktail", "Sauce", "Side".
+           - Add other relevant tags (e.g. "Healthy", "Quick", "Traditional") if appropriate.
         3. If ingredient AMOUNTS are missing in the text, USE YOUR CULINARY KNOWLEDGE to estimate reasonable metric amounts (e.g. "200g" for pasta for 2 people). NEVER return empty strings for amount/unit if you can infer them.
         4. Group ingredients by component if applicable (e.g., "Sauce", "Dressing", "Main"). If no distinct groups, use "Main".
         5. INSTRUCTIONS: Be detailed and descriptive. Do not summarize. Capture all small steps mentioned, even implied ones. We want a full cooking guide.

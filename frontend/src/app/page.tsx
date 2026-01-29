@@ -103,20 +103,43 @@ export default function Home() {
   // --- FILTERING & BILINGUAL SEARCH ---
   const [selectedCategory, setSelectedCategory] = useState("All");
 
-  const MEAL_TYPES = ['Breakfast', 'Brunch', 'Lunch', 'Dinner', 'Snack', 'Dessert'];
-  const DISH_TYPES = ['Burger', 'Pizza', 'Pasta', 'Sandwich', 'Wrap', 'Tacos', 'Bowl', 'Salad', 'Soup', 'Rice', 'Stew', 'Curry', 'Roast', 'Bake', 'Meat', 'Fish', 'Vegetarian', 'Vegan'];
+  const MEAL_TYPES = ['Breakfast', 'Brunch', 'Lunch', 'Dinner', 'Snack', 'Dessert', 'Appetizer', 'Drink'];
+  const DISH_TYPES = [
+    'Airfryer', 'BBQ', 'Slow Cooker', 'Pasta', 'Pizza', 'Burger', 'Sandwich', 'Wrap', 'Tacos',
+    'Salad', 'Bowl', 'Soup', 'Stew', 'Curry', 'Rice', 'Meat', 'Fish', 'Chicken', 'Vegetarian', 'Vegan',
+    'Low-Carb', 'High-Protein', 'Smoothie', 'Cocktail', 'Sauce', 'Side'
+  ];
 
   const TRANSLATIONS: Record<string, string[]> = {
-    'kip': ['chicken', 'poultry'], 'chicken': ['kip', 'gevogelte'],
-    'rund': ['beef', 'steak'], 'beef': ['rund', 'biefstuk'],
-    'varken': ['pork', 'ham', 'bacon'], 'pork': ['varken', 'ham', 'spek'],
-    'vis': ['fish', 'salmon', 'tuna'], 'fish': ['vis', 'zalm', 'tonijn'],
-    'groente': ['vegetable', 'veggie'], 'vegetable': ['groente', 'vega'],
-    'ontbijt': ['breakfast'], 'breakfast': ['ontbijt'],
-    'avondeten': ['dinner'], 'dinner': ['avondeten'],
-    'lunch': ['lunch'], 'middageten': ['lunch'],
-    'ei': ['egg'], 'eggs': ['eieren', 'ei'],
-    'kaas': ['cheese'], 'cheese': ['kaas']
+    // English -> Dutch & Synonyms
+    'chicken': ['kip', 'gevogelte', 'poultry'],
+    'beef': ['rund', 'biefstuk', 'steak', 'meat'],
+    'pork': ['varken', 'ham', 'spek', 'bacon', 'pork belly'],
+    'fish': ['vis', 'zalm', 'tonijn', 'salmon', 'tuna', 'cod', 'kabeljauw'],
+    'shrimp': ['garnaal', 'garnalen', 'prawns'],
+    'pasta': ['spaghetti', 'macaroni', 'penne', 'lasagna', 'noedels', 'noodles'],
+    'rice': ['rijst', 'risotto'],
+    'vegetable': ['groente', 'vega', 'vegetarian'],
+    'cheese': ['kaas', 'parmezaan', 'cheddar', 'mozzarella'],
+    'egg': ['ei', 'eieren', 'eggs'],
+    'bread': ['brood', 'toast', 'sandwich'],
+
+    // Dutch -> English & Synonyms
+    'kip': ['chicken', 'poultry'],
+    'rund': ['beef', 'steak'],
+    'varken': ['pork', 'ham', 'bacon'],
+    'vis': ['fish', 'salmon', 'tuna'],
+    'garnaal': ['shrimp', 'prawns'],
+    'groente': ['vegetable', 'veggie', 'vega'],
+    'ontbijt': ['breakfast'],
+    'lunch': ['middageten'],
+    'avondeten': ['dinner'],
+    'toetje': ['dessert'],
+    'drankje': ['drink', 'cocktail', 'smoothie'],
+    'gezond': ['healthy', 'low-carb', 'salad', 'bowl'],
+    'snel': ['quick', 'fast', '15 mins', 'airfryer'],
+    'airfryer': ['hetelucht'],
+    'bbq': ['barbecue', 'grillen', 'braai']
   };
 
   const filteredRecipes = savedRecipes.filter(r => {
