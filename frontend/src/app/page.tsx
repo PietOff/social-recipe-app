@@ -82,6 +82,21 @@ export default function Home() {
     }
   };
 
+  const handleDelete = () => {
+    if (!recipe) return;
+    if (confirm("Are you sure you want to delete this recipe?")) {
+      const updated = savedRecipes.filter(r => r.title !== recipe.title);
+      setSavedRecipes(updated);
+      localStorage.setItem('chefSocial_cookbook', JSON.stringify(updated));
+      setRecipe(null);
+      setView('cookbook');
+    }
+  };
+
+  const handlePrint = () => {
+    window.print();
+  };
+
   // --- VIEW STATE ---
   const [view, setView] = useState<'home' | 'cookbook' | 'details'>('home');
 
@@ -191,7 +206,11 @@ export default function Home() {
                 <div className={styles.recipeCard}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
                     <h2 className={styles.recipeTitle}>{recipe.title}</h2>
-                    <button onClick={() => setRecipe(null)} style={{ background: 'none', border: 'none', color: '#fff', opacity: 0.5, cursor: 'pointer', fontSize: '1.5rem' }}>×</button>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <button onClick={handlePrint} className={styles.iconButton} title="Save as PDF">🖨️</button>
+                      <button onClick={handleDelete} className={styles.iconButton} title="Delete Recipe" style={{ color: '#ff6b6b' }}>🗑️</button>
+                      <button onClick={() => setRecipe(null)} className={styles.iconButton} style={{ opacity: 0.6 }}>×</button>
+                    </div>
                   </div>
                   <p className={styles.recipeDesc}>{recipe.description}</p>
 

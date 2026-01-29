@@ -498,3 +498,131 @@
     transform: translateY(0);
   }
 }
+
+/* --- ACTIONS --- */
+.iconButton {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #fff;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 0.5rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.iconButton:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: translateY(-2px);
+}
+
+/* --- PRINT STYLES --- */
+@media print {
+  body {
+    background: white !important;
+    color: black !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Hide everything irrelevant */
+  .header,
+  .nav,
+  .form,
+  .iconButton,
+  .cookbookSection,
+  .backButton,
+  .saveButton {
+    display: none !important;
+  }
+
+  /* Reset Main Container */
+  .main,
+  .container,
+  .mainContent {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: none !important;
+    width: 100% !important;
+    background: white !important;
+    gap: 0 !important;
+  }
+
+  /* Recipe Card Styling for Paper */
+  .recipeCard {
+    background: white !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 2cm !important;
+    color: black !important;
+    margin: 0 !important;
+  }
+
+  .recipeTitle {
+    color: black !important;
+    font-size: 24pt !important;
+    text-align: center;
+    margin-bottom: 20pt;
+    background: none !important;
+    -webkit-text-fill-color: black !important;
+  }
+
+  .recipeDesc {
+    color: #444 !important;
+    font-style: italic;
+    text-align: center;
+    margin-bottom: 20pt;
+  }
+
+  .metaGrid {
+    border-top: 1px solid #ddd;
+    border-bottom: 1px solid #ddd;
+    padding: 10pt 0;
+    margin-bottom: 20pt;
+    color: black !important;
+    background: none !important;
+  }
+
+  .metaItem {
+    background: none !important;
+    color: black !important;
+    border: none !important;
+  }
+
+  .splitSection {
+    display: block !important;
+  }
+
+  .ingredients,
+  .instructions {
+    background: none !important;
+    padding: 0 !important;
+    margin-bottom: 20pt;
+  }
+
+  h3 {
+    color: black !important;
+    border-bottom: 2px solid black;
+    padding-bottom: 5pt;
+    font-size: 16pt !important;
+  }
+
+  h4 {
+    color: #333 !important;
+    font-weight: bold !important;
+  }
+
+  ul,
+  ol {
+    color: black !important;
+  }
+
+  li {
+    margin-bottom: 5pt !important;
+    color: black !important;
+  }
+}
