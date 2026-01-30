@@ -14,6 +14,7 @@ export interface Recipe {
     cook_time?: string;
     servings?: string;
     image_url?: string;
+    image?: string;
     tags?: string[];
     keywords?: string[];
     category?: string; // Legacy
