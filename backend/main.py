@@ -65,10 +65,13 @@ def extract_from_invidious(video_id: str):
     Bypasses YouTube blocking and Consent pages.
     """
     instances = [
+        "https://invidious.snopyta.org",
+        "https://yewtu.be",
         "https://inv.tux.pizza",
         "https://vid.puffyan.us",
         "https://invidious.projectsegfau.lt",
-        "https://invidious.fdn.fr"
+        "https://invidious.fdn.fr",
+        "https://invidious.privacydev.net"
     ]
     
     for instance in instances:
@@ -147,6 +150,54 @@ def extract_from_invidious(video_id: str):
             continue
             
     raise Exception("All Invidious instances failed.")
+
+
+def extract_from_piped(video_id: str):
+    """
+    Tries to fetch video data from Piped API instances.
+    Piped is often more reliable than Invidious.
+    """
+    instances = [
+        "https://pipedapi.kavin.rocks",
+        "https://api.piped.privacydev.net",
+        "https://pipedapi.in.projectsegfau.lt",
+        "https://api.piped.yt"
+    ]
+    
+    for instance in instances:
+        try:
+            api_url = f"{instance}/streams/{video_id}"
+            logger.info(f"Trying Piped instance: {instance}")
+            resp = requests.get(api_url, timeout=15)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                
+                title = data.get('title', 'Unknown Recipe')
+                description = data.get('description', '')
+                thumbnail = data.get('thumbnailUrl', f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg")
+                
+                # Extract audio stream URL
+                audio_url = None
+                if 'audioStreams' in data and data['audioStreams']:
+                    # Get highest quality audio
+                    audio_streams = sorted(data['audioStreams'], key=lambda x: x.get('bitrate', 0), reverse=True)
+                    if audio_streams:
+                        audio_url = audio_streams[0].get('url')
+                
+                return {
+                    'title': title,
+                    'description': description,
+                    'thumbnail': thumbnail,
+                    'id': video_id,
+                    'audio_url': audio_url
+                }
+                
+        except Exception as e:
+            logger.warning(f"Piped instance {instance} failed: {e}")
+            continue
+            
+    raise Exception("All Piped instances failed.")
 
 def resolve_redirects(url: str) -> str:
     """
@@ -267,11 +318,32 @@ def get_video_data(url: str, extract_audio: bool = False):
                         description = og_desc.group(1)
                     elif name_desc:
                         description = name_desc.group(1)
-                        
-                    # 3. Thumbnail
-                    img_match = re.search(r'<meta property="og:image" content="(.*?)">', html)
-                    if img_match:
-                        thumbnail = img_match.group(1)
+                    
+                    # 2b. TikTok SPECIFIC: Extract from __NEXT_DATA__ JSON for better description
+                    if "tiktok.com" in url:
+                        try:
+                            next_data = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
+                            if next_data:
+                                tiktok_data = json.loads(next_data.group(1))
+                                # Traverse to video description
+                                item_info = tiktok_data.get('props', {}).get('pageProps', {}).get('itemInfo', {}).get('itemStruct', {})
+                                if item_info:
+                                    tiktok_desc = item_info.get('desc', '')
+                                    tiktok_author = item_info.get('author', {}).get('uniqueId', '')
+                                    if tiktok_desc:
+                                        description = tiktok_desc
+                                        logger.info(f"Extracted TikTok description: {description[:80]}...")
+                                    # Also get thumbnail
+                                    if not thumbnail and 'video' in item_info:
+                                        thumbnail = item_info['video'].get('cover', thumbnail)
+                        except Exception as e_tt:
+                            logger.warning(f"TikTok JSON parsing failed: {e_tt}")
+                    
+                    # 3. Thumbnail (fallback if not extracted above)
+                    if not thumbnail:
+                        img_match = re.search(r'<meta property="og:image" content="(.*?)">', html)
+                        if img_match:
+                            thumbnail = img_match.group(1)
                     
                     # --- YouTube Specific Logic (Subtitles & Invidious) ---
                     if is_youtube:
@@ -360,7 +432,31 @@ def get_video_data(url: str, extract_audio: bool = False):
                                 except Exception as e_inv_dl:
                                     logger.warning(f"Invidious manual audio download failed: {e_inv_dl}")
                          except Exception as e5:
-                            raise HTTPException(status_code=400, detail=f"All extraction methods failed. YouTube blocked us. Error: {str(e5)}")
+                             # FALLBACK 5: Piped API (when Invidious fails)
+                             logger.info(f"Invidious failed: {e5}. Trying Piped API...")
+                             try:
+                                 info = extract_from_piped(video_id)
+                                 
+                                 # Manual Audio Download from Piped if needed
+                                 if extract_audio and info.get('audio_url') and not audio_path:
+                                     try:
+                                         logger.info("Downloading audio directly from Piped stream...")
+                                         piped_audio_url = info['audio_url']
+                                         temp_piped_path = f"{tempfile.gettempdir()}/{video_id}_piped.mp3"
+                                         
+                                         r_piped = requests.get(piped_audio_url, stream=True, timeout=20, headers={'User-Agent': 'Mozilla/5.0'})
+                                         if r_piped.status_code == 200:
+                                             with open(temp_piped_path, 'wb') as f:
+                                                 for chunk in r_piped.iter_content(chunk_size=8192):
+                                                     f.write(chunk)
+                                             audio_path = temp_piped_path
+                                             logger.info(f"Piped audio saved to {audio_path}")
+                                         else:
+                                             logger.warning(f"Piped audio stream fetch failed: {r_piped.status_code}")
+                                     except Exception as e_piped_dl:
+                                         logger.warning(f"Piped manual audio download failed: {e_piped_dl}")
+                             except Exception as e6:
+                                 raise HTTPException(status_code=400, detail=f"All extraction methods failed. YouTube blocked us. Error: Invidious: {str(e5)}, Piped: {str(e6)}")
                      else:
                          # Non-YouTube: If generic scrape failed, we really are stuck.
                          raise HTTPException(status_code=400, detail=f"Could not fetch video data. Platform may be blocking requests. Error: {str(e4)}")
@@ -627,8 +723,15 @@ def extract_recipe(request: ExtractRequest):
             raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{transcript}"
             
     # 3. Vision Fallback: If text is short, try to download and SEE the video
-    # Check if raw_text is just "Unknown Recipe\nNo description available"
-    if len(raw_text) < 200 or "No description" in raw_text:
+    # Check if raw_text is just "Unknown Recipe\nNo description available" or a generic platform title
+    is_thin_content = (
+        len(raw_text) < 150 or 
+        "No description" in raw_text or
+        "TikTok" in raw_text[:30] or
+        "Instagram" in raw_text[:30] or
+        "Make Your Day" in raw_text
+    )
+    if is_thin_content:
         logger.info("Description thin. Attempting Vision Analysis...")
         # We need the HTML to find direct URL manually if yt-dlp failed to give us a file
         # But get_video_data consumes the attempts.

@@ -522,12 +522,6 @@
 
 /* --- PRINT STYLES --- */
 @media print {
-  body {
-    background: white !important;
-    color: black !important;
-    padding: 0 !important;
-    margin: 0 !important;
-  }
 
   /* Hide everything irrelevant */
   .header,
@@ -602,27 +596,6 @@
     background: none !important;
     padding: 0 !important;
     margin-bottom: 20pt;
-  }
-
-  h3 {
-    color: black !important;
-    border-bottom: 2px solid black;
-    padding-bottom: 5pt;
-    font-size: 16pt !important;
-  }
-
-  h4 {
-    color: #333 !important;
-    font-weight: bold !important;
-  }
-
-  ul,
-  ol {
-    color: black !important;
-  }
-
-  li {
-    margin-bottom: 5pt !important;
     color: black !important;
   }
 }
