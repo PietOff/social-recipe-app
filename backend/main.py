@@ -64,14 +64,11 @@ def extract_from_invidious(video_id: str):
     Tries to fetch video data from public Invidious instances.
     Bypasses YouTube blocking and Consent pages.
     """
+    # Updated 2026-01-30: Using currently active instances from api.invidious.io
     instances = [
-        "https://invidious.snopyta.org",
-        "https://yewtu.be",
-        "https://inv.tux.pizza",
-        "https://vid.puffyan.us",
-        "https://invidious.projectsegfau.lt",
-        "https://invidious.fdn.fr",
-        "https://invidious.privacydev.net"
+        "https://invidious.nerdvpn.de",  # 99.93% uptime
+        "https://yewtu.be",               # 98.19% uptime
+        "https://inv.nadeko.net",         # 97.68% uptime
     ]
     
     for instance in instances:
@@ -157,11 +154,9 @@ def extract_from_piped(video_id: str):
     Tries to fetch video data from Piped API instances.
     Piped is often more reliable than Invidious.
     """
+    # Updated 2026-01-30: Using currently active instances from piped-instances.kavin.rocks
     instances = [
-        "https://pipedapi.kavin.rocks",
-        "https://api.piped.privacydev.net",
-        "https://pipedapi.in.projectsegfau.lt",
-        "https://api.piped.yt"
+        "https://api.piped.private.coffee",  # 100% uptime, Austria
     ]
     
     for instance in instances:
