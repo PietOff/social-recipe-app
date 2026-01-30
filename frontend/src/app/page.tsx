@@ -223,7 +223,7 @@ export default function Home() {
                 </form>
               )}
 
-              {error && <div className={styles.error}>{error}</div>}
+              {error && <div className={styles.error}>{error}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>💡 Tip: Try using TikTok or Instagram links instead</small></>}</div>}
 
               {recipe && (
                 <div className={styles.recipeCard}>
@@ -342,8 +342,8 @@ export default function Home() {
               <div className={styles.cookbookGrid}>
                 {filteredRecipes.map((r, idx) => (
                   <div key={idx} className={styles.cookbookItem} onClick={() => { setRecipe(r); setView('details'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
-                    <div className={styles.cookbookImage} style={{ backgroundImage: r.image_url ? `url(${r.image_url})` : 'none' }}>
-                      {!r.image_url && <span>🍳</span>}
+                    <div className={styles.cookbookImage} style={{ backgroundImage: (r.image_url || r.image) ? `url(${r.image_url || r.image})` : 'none' }}>
+                      {!(r.image_url || r.image) && <span>🍳</span>}
                     </div>
                     <div className={styles.cookbookContent}>
                       <h4>{r.title}</h4>
