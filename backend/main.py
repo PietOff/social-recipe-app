@@ -562,7 +562,7 @@ def parse_with_llm(text_data: str, api_key: str):
         }}
 
         If the text contains no recipe, return empty strings in JSON but explain in description.
-        If language is Dutch, keep it Dutch.
+        ALWAYS translate the entire recipe (title, ingredients, instructions) into English, regardless of the input language.
         
         Raw Text:
         {text_data}
