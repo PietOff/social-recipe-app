@@ -270,7 +270,7 @@ export default function Home() {
                           <ul>
                             {items.map((ing, i) => (
                               <li key={i}>
-                                <b>{ing.amount} {ing.unit}</b> {ing.item}
+                                <b>{ing.amount} {(ing.unit && !ing.amount?.toLowerCase().endsWith(ing.unit.toLowerCase())) ? ing.unit : ''}</b> {ing.item}
                               </li>
                             ))}
                           </ul>
