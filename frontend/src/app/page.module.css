@@ -9,6 +9,10 @@
   --card-bg: rgba(30, 30, 30, 0.6);
 }
 
+.hidden {
+  display: none !important;
+}
+
 .main {
   min-height: 100vh;
   padding: 4rem 1.5rem;

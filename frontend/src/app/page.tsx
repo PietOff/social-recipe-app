@@ -342,8 +342,21 @@ export default function Home() {
               <div className={styles.cookbookGrid}>
                 {filteredRecipes.map((r, idx) => (
                   <div key={idx} className={styles.cookbookItem} onClick={() => { setRecipe(r); setView('details'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
-                    <div className={styles.cookbookImage} style={{ backgroundImage: (r.image_url || r.image) ? `url(${r.image_url || r.image})` : 'none' }}>
-                      {!(r.image_url || r.image) && <span>🍳</span>}
+                    <div className={styles.cookbookImage}>
+                      {(r.image_url || r.image) ? (
+                        <img
+                          src={r.image_url || r.image}
+                          alt={r.title}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          onError={(e) => {
+                            // Hide broken image and show emoji fallback
+                            e.currentTarget.style.display = 'none';
+                            const siblingSpan = e.currentTarget.nextElementSibling as HTMLElement;
+                            if (siblingSpan) siblingSpan.style.display = 'block';
+                          }}
+                        />
+                      ) : null}
+                      <span style={{ fontSize: '2rem', display: (r.image_url || r.image) ? 'none' : 'block' }}>🍳</span>
                     </div>
                     <div className={styles.cookbookContent}>
                       <h4>{r.title}</h4>
