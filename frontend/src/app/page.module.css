@@ -592,14 +592,29 @@
   }
 
   .splitSection {
-    display: block !important;
+    display: grid !important;
+    grid-template-columns: 35% 1fr !important;
+    gap: 2rem !important;
+    align-items: start !important;
+    margin-top: 2rem !important;
   }
 
-  .ingredients,
+  .ingredients {
+    border-right: 1px solid #ddd !important;
+    padding-right: 1.5rem !important;
+    margin-bottom: 0 !important;
+  }
+
   .instructions {
-    background: none !important;
-    padding: 0 !important;
-    margin-bottom: 20pt;
+    margin-bottom: 0 !important;
+    padding-left: 0 !important;
+  }
+
+  .ingredients h3,
+  .instructions h3 {
     color: black !important;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 5px;
+    margin-top: 0 !important;
   }
 }
