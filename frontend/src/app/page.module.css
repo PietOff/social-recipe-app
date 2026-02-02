@@ -546,6 +546,8 @@
     margin: 0 !important;
     max-width: none !important;
     width: 100% !important;
+    min-width: 800px !important;
+    /* Force desktop width for print layout */
     background: white !important;
     gap: 0 !important;
   }
@@ -555,7 +557,8 @@
     background: white !important;
     border: none !important;
     box-shadow: none !important;
-    padding: 2cm !important;
+    padding: 0 !important;
+    /* Let page margins handle spacing */
     color: black !important;
     margin: 0 !important;
   }
