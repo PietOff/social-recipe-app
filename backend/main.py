@@ -3,7 +3,7 @@ import json
 import logging
 import typing_extensions
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import yt_dlp
@@ -14,6 +14,9 @@ import tempfile
 from pathlib import Path
 import base64
 import subprocess
+import jwt
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 # Load env vars
 load_dotenv()
@@ -778,3 +781,189 @@ def extract_recipe(request: ExtractRequest):
 @app.get("/")
 def health_check():
     return {"status": "ok", "service": "Social Recipe Extractor (Groq+Whisper)"}
+
+
+# ============================================================
+# AUTHENTICATION & USER ENDPOINTS
+# ============================================================
+
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+JWT_SECRET = os.getenv("JWT_SECRET", "your-secret-key-change-in-production")
+
+# Pydantic models for auth
+class GoogleAuthRequest(BaseModel):
+    credential: str  # Google ID token
+
+class UserResponse(BaseModel):
+    id: str
+    email: str
+    name: Optional[str]
+    avatar_url: Optional[str]
+    token: str  # JWT for subsequent requests
+
+# Pydantic models for recipes
+class RecipeInput(BaseModel):
+    title: str
+    description: Optional[str] = ""
+    ingredients: Optional[List[dict]] = []
+    instructions: Optional[List[str]] = []
+    tags: Optional[List[str]] = []
+    image_url: Optional[str] = None
+    prep_time: Optional[str] = None
+    cook_time: Optional[str] = None
+    servings: Optional[str] = None
+
+class RecipeResponse(BaseModel):
+    id: str
+    title: str
+    description: Optional[str]
+    ingredients: Optional[List[dict]]
+    instructions: Optional[List[str]]
+    tags: Optional[List[str]]
+    image_url: Optional[str]
+    prep_time: Optional[str]
+    cook_time: Optional[str]
+    servings: Optional[str]
+
+
+def get_supabase_client():
+    """Lazy import to avoid errors if Supabase isn't configured."""
+    try:
+        from supabase_client import get_supabase
+        return get_supabase()
+    except Exception as e:
+        logger.warning(f"Supabase not configured: {e}")
+        return None
+
+
+def verify_jwt(authorization: str = Header(None)) -> dict:
+    """Verify JWT token and return user data."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
+    
+    token = authorization.replace("Bearer ", "")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
+@app.post("/auth/google", response_model=UserResponse)
+async def google_auth(request: GoogleAuthRequest):
+    """
+    Verify Google ID token and create/get user.
+    Returns a JWT for subsequent authenticated requests.
+    """
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="Google OAuth not configured")
+    
+    try:
+        # Verify the Google ID token
+        idinfo = id_token.verify_oauth2_token(
+            request.credential,
+            google_requests.Request(),
+            GOOGLE_CLIENT_ID
+        )
+        
+        google_id = idinfo['sub']
+        email = idinfo.get('email', '')
+        name = idinfo.get('name', '')
+        avatar_url = idinfo.get('picture', '')
+        
+        # Check if user exists
+        result = supabase.table("users").select("*").eq("google_id", google_id).execute()
+        
+        if result.data:
+            user = result.data[0]
+        else:
+            # Create new user
+            new_user = {
+                "google_id": google_id,
+                "email": email,
+                "name": name,
+                "avatar_url": avatar_url
+            }
+            insert_result = supabase.table("users").insert(new_user).execute()
+            user = insert_result.data[0]
+        
+        # Generate JWT
+        token_payload = {
+            "user_id": user["id"],
+            "email": user["email"],
+            "exp": int((datetime.now() + timedelta(days=30)).timestamp())
+        }
+        token = jwt.encode(token_payload, JWT_SECRET, algorithm="HS256")
+        
+        return UserResponse(
+            id=user["id"],
+            email=user["email"],
+            name=user.get("name"),
+            avatar_url=user.get("avatar_url"),
+            token=token
+        )
+        
+    except ValueError as e:
+        logger.error(f"Invalid Google token: {e}")
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+
+@app.get("/recipes")
+async def list_recipes(user: dict = Depends(verify_jwt)):
+    """Get all recipes for the authenticated user."""
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    result = supabase.table("recipes").select("*").eq("user_id", user["user_id"]).order("created_at", desc=True).execute()
+    return result.data
+
+
+@app.post("/recipes")
+async def save_recipe(recipe: RecipeInput, user: dict = Depends(verify_jwt)):
+    """Save a recipe for the authenticated user."""
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    recipe_data = {
+        "user_id": user["user_id"],
+        "title": recipe.title,
+        "description": recipe.description,
+        "ingredients": recipe.ingredients,
+        "instructions": recipe.instructions,
+        "tags": recipe.tags,
+        "image_url": recipe.image_url,
+        "prep_time": recipe.prep_time,
+        "cook_time": recipe.cook_time,
+        "servings": recipe.servings
+    }
+    
+    result = supabase.table("recipes").insert(recipe_data).execute()
+    return result.data[0] if result.data else None
+
+
+@app.delete("/recipes/{recipe_id}")
+async def delete_recipe(recipe_id: str, user: dict = Depends(verify_jwt)):
+    """Delete a recipe (only if owned by user)."""
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    # Verify ownership and delete
+    result = supabase.table("recipes").delete().eq("id", recipe_id).eq("user_id", user["user_id"]).execute()
+    
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Recipe not found or not owned by user")
+    
+    return {"deleted": True, "id": recipe_id}
+
+
+# Import datetime for JWT expiration
+from datetime import datetime, timedelta

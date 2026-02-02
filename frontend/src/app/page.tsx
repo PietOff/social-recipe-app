@@ -1,46 +1,165 @@
 'use client';
 
 import React, { useState } from 'react';
+import { GoogleOAuthProvider, GoogleLogin, CredentialResponse } from '@react-oauth/google';
 import RecipeCard from '../components/RecipeCard';
 import { CategoryAccordion } from '../components/CategoryAccordion';
 import { Recipe } from '../types';
 import styles from './page.module.css';
 
-export default function Home() {
+const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || '';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://social-recipe-appsocial-recipe-backend.onrender.com';
+
+interface User {
+  id: string;
+  email: string;
+  name?: string;
+  avatar_url?: string;
+  token: string;
+}
+
+function HomeContent() {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [savedRecipes, setSavedRecipes] = useState<Recipe[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
 
   // Helper to migrate legacy single-category recipes
   const categoryToTags = (cat: string) => [cat];
 
-  // Load saved recipes on mount
+  // Load saved recipes and user on mount
   React.useEffect(() => {
-    const saved = localStorage.getItem('chefSocial_cookbook');
-    if (saved) {
+    // Load user from localStorage
+    const savedUser = localStorage.getItem('chefSocial_user');
+    if (savedUser) {
       try {
-        setSavedRecipes(JSON.parse(saved));
+        const parsedUser = JSON.parse(savedUser);
+        setUser(parsedUser);
+        // Fetch recipes from cloud
+        fetchCloudRecipes(parsedUser.token);
       } catch (e) {
-        console.error('Failed to load cookbook', e);
+        console.error('Failed to load user', e);
+      }
+    } else {
+      // Load local recipes if not logged in
+      const saved = localStorage.getItem('chefSocial_cookbook');
+      if (saved) {
+        try {
+          setSavedRecipes(JSON.parse(saved));
+        } catch (e) {
+          console.error('Failed to load cookbook', e);
+        }
       }
     }
   }, []);
 
-  const saveRecipe = (recipeToSave: Recipe) => {
+  const fetchCloudRecipes = async (token: string) => {
+    try {
+      const res = await fetch(`${API_URL}/recipes`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const recipes = await res.json();
+        setSavedRecipes(recipes);
+      }
+    } catch (e) {
+      console.error('Failed to fetch cloud recipes', e);
+    }
+  };
+
+  const handleGoogleLogin = async (credentialResponse: CredentialResponse) => {
+    if (!credentialResponse.credential) return;
+
+    setAuthLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/auth/google`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential: credentialResponse.credential })
+      });
+
+      if (res.ok) {
+        const userData = await res.json();
+        setUser(userData);
+        localStorage.setItem('chefSocial_user', JSON.stringify(userData));
+
+        // Migrate local recipes to cloud
+        const localRecipes = localStorage.getItem('chefSocial_cookbook');
+        if (localRecipes) {
+          const recipes = JSON.parse(localRecipes);
+          for (const r of recipes) {
+            await fetch(`${API_URL}/recipes`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${userData.token}`
+              },
+              body: JSON.stringify(r)
+            });
+          }
+          localStorage.removeItem('chefSocial_cookbook'); // Clear local after migration
+        }
+
+        // Fetch all cloud recipes
+        fetchCloudRecipes(userData.token);
+      } else {
+        console.error('Login failed');
+      }
+    } catch (e) {
+      console.error('Google login error', e);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+    localStorage.removeItem('chefSocial_user');
+    setSavedRecipes([]);
+  };
+
+  const saveRecipe = async (recipeToSave: Recipe) => {
     const isAlreadySaved = savedRecipes.some(r => r.title === recipeToSave.title);
-    let newSaved;
 
     if (isAlreadySaved) {
-      newSaved = savedRecipes.filter(r => r.title !== recipeToSave.title);
+      // Remove recipe
+      const newSaved = savedRecipes.filter(r => r.title !== recipeToSave.title);
+      setSavedRecipes(newSaved);
+      if (!user) {
+        localStorage.setItem('chefSocial_cookbook', JSON.stringify(newSaved));
+      }
+      // Note: Cloud delete would need recipe ID, skipping for now
     } else {
-      newSaved = [recipeToSave, ...savedRecipes];
+      // Add recipe
+      if (user) {
+        // Save to cloud
+        try {
+          const res = await fetch(`${API_URL}/recipes`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${user.token}`
+            },
+            body: JSON.stringify(recipeToSave)
+          });
+          if (res.ok) {
+            const savedRecipe = await res.json();
+            setSavedRecipes([savedRecipe, ...savedRecipes]);
+          }
+        } catch (e) {
+          console.error('Failed to save to cloud', e);
+        }
+      } else {
+        // Save locally
+        const newSaved = [recipeToSave, ...savedRecipes];
+        setSavedRecipes(newSaved);
+        localStorage.setItem('chefSocial_cookbook', JSON.stringify(newSaved));
+      }
     }
-
-    setSavedRecipes(newSaved);
-    localStorage.setItem('chefSocial_cookbook', JSON.stringify(newSaved));
   };
 
   const handleExtract = async (e: React.FormEvent) => {
@@ -52,10 +171,7 @@ export default function Home() {
     setRecipe(null);
 
     try {
-      // FIX: Use the validated Render URL (it looks weird, but it works!)
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL
-        ? `${process.env.NEXT_PUBLIC_BACKEND_URL}/extract-recipe`
-        : 'https://social-recipe-appsocial-recipe-backend.onrender.com/extract-recipe';
+      const backendUrl = `${API_URL}/extract-recipe`;
 
       const res = await fetch(backendUrl, {
         method: 'POST',
@@ -173,8 +289,49 @@ export default function Home() {
     <main className={styles.main}>
       <div className={styles.container}>
         <header className={styles.header}>
-          <div className={styles.logoAndTitle}>
+          <div className={styles.logoAndTitle} style={{ position: 'relative' }}>
             <h1 className={styles.logo}>Chef<span className={styles.highlight}>Social</span></h1>
+
+            {/* User Auth Area */}
+            <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)' }}>
+              {user ? (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    cursor: 'pointer'
+                  }}
+                  onClick={handleLogout}
+                  title="Click to logout"
+                >
+                  {user.avatar_url && (
+                    <img
+                      src={user.avatar_url}
+                      alt={user.name || 'User'}
+                      style={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: '50%',
+                        border: '2px solid rgba(255,255,255,0.3)'
+                      }}
+                    />
+                  )}
+                  <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>
+                    {user.name?.split(' ')[0] || 'User'}
+                  </span>
+                </div>
+              ) : (
+                <GoogleLogin
+                  onSuccess={handleGoogleLogin}
+                  onError={() => console.error('Login Failed')}
+                  size="medium"
+                  theme="filled_black"
+                  text="signin"
+                  shape="pill"
+                />
+              )}
+            </div>
           </div>
 
           {/* NAVIGATION BUTTONS */}
@@ -381,3 +538,13 @@ export default function Home() {
     </main>
   );
 }
+
+// Wrap in GoogleOAuthProvider
+export default function Home() {
+  return (
+    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
+      <HomeContent />
+    </GoogleOAuthProvider>
+  );
+}
+
