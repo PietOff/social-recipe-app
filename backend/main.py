@@ -27,11 +27,12 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Social Recipe Extractor")
 
-# Configure CORS
+# Configure CORS - allow all Vercel preview URLs
 origins = [
     "http://localhost:3000",
     "https://social-recipe-app.vercel.app",
     "https://social-recipe-app-pietoffs-projects.vercel.app",
+    "https://social-recipe-app-git-main-pietoffs-projects.vercel.app",
 ]
 
 app.add_middleware(
@@ -41,6 +42,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+logger.info(f"CORS configured for origins: {origins}")
 
 # --- Models ---
 
