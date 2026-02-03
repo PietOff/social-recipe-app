@@ -864,6 +864,8 @@ def verify_jwt(authorization: str = Header(None)) -> dict:
 @app.options("/auth/google")
 @app.options("/user/recipes")
 @app.options("/user/recipes/{recipe_id}")
+@app.options("/recipes")
+@app.options("/recipes/{recipe_id}")
 async def cors_preflight(request: Request):
     """Handle CORS preflight for auth endpoints."""
     origin = request.headers.get("origin", "")
