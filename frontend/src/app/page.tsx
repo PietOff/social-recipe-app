@@ -75,6 +75,7 @@ function HomeContent() {
     if (!credentialResponse.credential) return;
 
     setAuthLoading(true);
+    setError(null);
     try {
       const res = await fetch(`${API_URL}/auth/google`, {
         method: 'POST',
@@ -107,9 +108,12 @@ function HomeContent() {
         // Fetch all cloud recipes
         fetchCloudRecipes(userData.token);
       } else {
-        console.error('Login failed');
+        const errData = await res.json().catch(() => ({ detail: 'Login failed' }));
+        setError(`Login failed: ${errData.detail || res.statusText}`);
+        console.error('Login failed:', errData);
       }
-    } catch (e) {
+    } catch (e: any) {
+      setError(`Login error: ${e.message}`);
       console.error('Google login error', e);
     } finally {
       setAuthLoading(false);
