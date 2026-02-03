@@ -3,8 +3,9 @@ import json
 import logging
 import typing_extensions
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import Response
 from pydantic import BaseModel
 import yt_dlp
 import requests
@@ -858,6 +859,26 @@ def verify_jwt(authorization: str = Header(None)) -> dict:
         raise HTTPException(status_code=401, detail="Token has expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+
+@app.options("/auth/google")
+@app.options("/user/recipes")
+@app.options("/user/recipes/{recipe_id}")
+async def cors_preflight(request: Request):
+    """Handle CORS preflight for auth endpoints."""
+    origin = request.headers.get("origin", "")
+    # Check if origin is in our allowed list
+    allowed_origin = origin if origin in origins else origins[0]
+    return Response(
+        content="",
+        headers={
+            "Access-Control-Allow-Origin": allowed_origin,
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "content-type, authorization",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Max-Age": "86400",
+        }
+    )
 
 
 @app.post("/auth/google", response_model=UserResponse)
