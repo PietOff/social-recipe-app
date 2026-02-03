@@ -4,13 +4,14 @@ Supabase client configuration for database operations.
 import os
 from supabase import create_client, Client
 from dotenv import load_dotenv
+from typing import Optional
 
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-supabase: Client | None = None
+supabase: Optional[Client] = None
 
 def get_supabase() -> Client:
     """Get or create Supabase client instance."""
