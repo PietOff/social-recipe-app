@@ -867,14 +867,19 @@ def verify_jwt(authorization: str = Header(None)) -> dict:
 async def cors_preflight(request: Request):
     """Handle CORS preflight for auth endpoints."""
     origin = request.headers.get("origin", "")
+    # Log the preflight request for debugging
+    logger.info(f"CORS preflight request from origin: {origin}")
     # Check if origin is in our allowed list
     allowed_origin = origin if origin in origins else origins[0]
+    logger.info(f"CORS preflight response: allowing origin {allowed_origin}")
     return Response(
-        content="",
+        content="OK",
+        status_code=200,
+        media_type="text/plain",
         headers={
             "Access-Control-Allow-Origin": allowed_origin,
             "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers": "content-type, authorization",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
             "Access-Control-Allow-Credentials": "true",
             "Access-Control-Max-Age": "86400",
         }
