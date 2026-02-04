@@ -135,6 +135,7 @@ def get_video_data(url: str, extract_audio: bool = False):
     info = {}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
+            info = ydl.extract_info(url, download=extract_audio)
         except Exception as e:
             # FALLBACK: Catch ALL errors (bot detection, generic failures, etc.) and try generic scraping
             logger.warning(f"yt-dlp failed (Error: {str(e)}). Attempting direct HTML scraping...")
