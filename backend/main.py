@@ -72,140 +72,10 @@ class Recipe(typing_extensions.TypedDict):
 
 # --- Functions ---
 
-def extract_from_invidious(video_id: str):
-    """
-    Tries to fetch video data from public Invidious instances.
-    Bypasses YouTube blocking and Consent pages.
-    """
-    # Updated 2026-01-30: Using currently active instances from api.invidious.io
-    instances = [
-        "https://invidious.nerdvpn.de",  # 99.93% uptime
-        "https://yewtu.be",               # 98.19% uptime
-        "https://inv.nadeko.net",         # 97.68% uptime
-    ]
-    
-    for instance in instances:
-        try:
-            api_url = f"{instance}/api/v1/videos/{video_id}"
-            logger.info(f"Trying Invidious instance: {instance}")
-            resp = requests.get(api_url, timeout=10)
-            
-            if resp.status_code == 200:
-                data = resp.json()
-                
-                title = data.get('title', 'Unknown Recipe')
-                description = data.get('description', '')
-                thumbnail = ""
-                # Get high res thumbnail
-                if 'videoThumbnails' in data and data['videoThumbnails']:
-                    thumbnail = data['videoThumbnails'][0]['url']
-                else:
-                    thumbnail = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
-                
-                # Fetch Subtitles
-                captions = data.get('captions', [])
-                subtitle_text = ""
-                
-                # Prioritize Dutch, then English, then Auto
-                selected_caption = None
-                for cap in captions:
-                    label = cap.get('label', '').lower()
-                    if 'dutch' in label or 'nederlands' in label:
-                        selected_caption = cap
-                        break
-                
-                if not selected_caption:
-                    for cap in captions:
-                        label = cap.get('label', '').lower()
-                        if 'english' in label:
-                            selected_caption = cap
-                            break
-                            
-                if not selected_caption and captions:
-                    selected_caption = captions[0]
-                    
-                if selected_caption:
-                    cap_url = instance + selected_caption.get('url')
-                    logger.info(f"Fetching Invidious subtitles: {cap_url}")
-                    cap_resp = requests.get(cap_url, timeout=5)
-                    if cap_resp.status_code == 200:
-                        # Invidious returns VTT. We can dump it raw or clean it.
-                        # For now, raw VTT is better than nothing, LLM can handle it.
-                        subtitle_text = f"\n\n[SUBTITLES via Invidious]:\n{cap_resp.text}"
-                
-                # Extract Audio Stream URL (for fallback downloading)
-                audio_url = None
-                # Try adaptive formats (audio only) first
-                if 'adaptiveFormats' in data:
-                    for fmt in data['adaptiveFormats']:
-                        if 'audio' in fmt.get('type', '') or fmt.get('audioQuality'):
-                           audio_url = fmt.get('url')
-                           break
-                # Fallback to standard formats
-                if not audio_url and 'formatStreams' in data:
-                     for fmt in data['formatStreams']:
-                        audio_url = fmt.get('url') # Just take the first one (usually lowest quality video+audio)
-                        break
-
-                return {
-                    'title': title,
-                    'description': description + subtitle_text,
-                    'thumbnail': thumbnail,
-                    'id': video_id,
-                    'audio_url': audio_url
-                }
-                
-        except Exception as e:
-            logger.warning(f"Invidious instance {instance} failed: {e}")
-            continue
-            
-    raise Exception("All Invidious instances failed.")
 
 
-def extract_from_piped(video_id: str):
-    """
-    Tries to fetch video data from Piped API instances.
-    Piped is often more reliable than Invidious.
-    """
-    # Updated 2026-01-30: Using currently active instances from piped-instances.kavin.rocks
-    instances = [
-        "https://api.piped.private.coffee",  # 100% uptime, Austria
-    ]
-    
-    for instance in instances:
-        try:
-            api_url = f"{instance}/streams/{video_id}"
-            logger.info(f"Trying Piped instance: {instance}")
-            resp = requests.get(api_url, timeout=15)
-            
-            if resp.status_code == 200:
-                data = resp.json()
-                
-                title = data.get('title', 'Unknown Recipe')
-                description = data.get('description', '')
-                thumbnail = data.get('thumbnailUrl', f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg")
-                
-                # Extract audio stream URL
-                audio_url = None
-                if 'audioStreams' in data and data['audioStreams']:
-                    # Get highest quality audio
-                    audio_streams = sorted(data['audioStreams'], key=lambda x: x.get('bitrate', 0), reverse=True)
-                    if audio_streams:
-                        audio_url = audio_streams[0].get('url')
-                
-                return {
-                    'title': title,
-                    'description': description,
-                    'thumbnail': thumbnail,
-                    'id': video_id,
-                    'audio_url': audio_url
-                }
-                
-        except Exception as e:
-            logger.warning(f"Piped instance {instance} failed: {e}")
-            continue
-            
-    raise Exception("All Piped instances failed.")
+
+
 
 def resolve_redirects(url: str) -> str:
     """
@@ -265,212 +135,81 @@ def get_video_data(url: str, extract_audio: bool = False):
     info = {}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
-            # TRY 1: Attempt to get audio + metadata + subtitles
-            info = ydl.extract_info(url, download=extract_audio)
         except Exception as e:
             # FALLBACK: Catch ALL errors (bot detection, generic failures, etc.) and try generic scraping
-            logger.warning(f"yt-dlp failed (Error: {str(e)}). Attempting fallbacks...")
+            logger.warning(f"yt-dlp failed (Error: {str(e)}). Attempting direct HTML scraping...")
             
-            # Remove specific player client args that might trigger detection
-            if 'extractor_args' in ydl_opts:
-                del ydl_opts['extractor_args']
+            # Request purely for HTML metadata
+            import requests
+            import re
             
             try:
-                # FALLBACK 1 & 2: Try yt-dlp again with looser constraints (Skip download, Flat extract)
-                # Only worth trying if it's a "DownloadError" and likely bot-related, but we can try broadly or skip to HTML.
-                # For TikTok, yt-dlp retries rarely work if the first one failed hard. Let's try one generic "flat" attempt.
-                ydl_opts['extract_flat'] = True
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl_flat:
-                     info = ydl_flat.extract_info(url, download=False)
-
-            except Exception as e3:
-                # FALLBACK 3: NUCLEAR OPTION - Direct HTML Scraping
-                logger.warning("yt-dlp completely blocked/failed. Attempting direct HTML scraping...")
-                import requests
-                import re
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                    "Accept-Language": "en-US,en;q=0.9",
+                }
+                # Check for cookies (optional logic kept simple)
                 
-                # Check if it's YouTube
-                is_youtube = "youtube.com" in url or "youtu.be" in url
-                
-                try:
-                    headers = {
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                        "Accept-Language": "en-US,en;q=0.9",
-                    }
-                    if is_youtube:
-                        headers["Cookie"] = "SOCS=CAISEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg; CONSENT=YES+cb.20230531-04-p0.en+FX+417; PREF=f6=400&f4=4000000"
+                resp = requests.get(url, headers=headers, timeout=10)
+                if resp.status_code != 200:
+                        raise Exception(f"HTML request failed: {resp.status_code}")
                         
-                    resp = requests.get(url, headers=headers, timeout=10)
-                    if resp.status_code != 200:
-                         raise Exception(f"HTML request failed: {resp.status_code}")
-                         
-                    html = resp.text
-                    title = "Unknown Recipe"
-                    description = "No description available"
-                    thumbnail = ""
-                    
-                    # --- Generic Scraping (Works for TikTok, Insta, etc.) ---
-                    # 1. Title
-                    og_title = re.search(r'<meta property="og:title" content="(.*?)">', html)
-                    title_tag = re.search(r'<title>(.*?)</title>', html)
-                    if og_title:
-                        title = og_title.group(1)
-                    elif title_tag:
-                        title = title_tag.group(1)
-                        if is_youtube: title = title.replace(" - YouTube", "")
-                    
-                    # 2. Description
-                    og_desc = re.search(r'<meta property="og:description" content="(.*?)">', html)
-                    name_desc = re.search(r'<meta name="description" content="(.*?)">', html)
-                    if og_desc:
-                        description = og_desc.group(1)
-                    elif name_desc:
-                        description = name_desc.group(1)
-                    
-                    # 2b. TikTok SPECIFIC: Extract from __NEXT_DATA__ JSON for better description
-                    if "tiktok.com" in url:
-                        try:
-                            next_data = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
-                            if next_data:
-                                tiktok_data = json.loads(next_data.group(1))
-                                # Traverse to video description
-                                item_info = tiktok_data.get('props', {}).get('pageProps', {}).get('itemInfo', {}).get('itemStruct', {})
-                                if item_info:
-                                    tiktok_desc = item_info.get('desc', '')
-                                    tiktok_author = item_info.get('author', {}).get('uniqueId', '')
-                                    if tiktok_desc:
-                                        description = tiktok_desc
-                                        logger.info(f"Extracted TikTok description: {description[:80]}...")
-                                    # Also get thumbnail
-                                    if not thumbnail and 'video' in item_info:
-                                        thumbnail = item_info['video'].get('cover', thumbnail)
-                        except Exception as e_tt:
-                            logger.warning(f"TikTok JSON parsing failed: {e_tt}")
-                    
-                    # 3. Thumbnail (fallback if not extracted above)
-                    if not thumbnail:
-                        img_match = re.search(r'<meta property="og:image" content="(.*?)">', html)
-                        if img_match:
-                            thumbnail = img_match.group(1)
-                    
-                    # --- YouTube Specific Logic (Subtitles & Invidious) ---
-                    if is_youtube:
-                        # Manual Subtitle Extraction
-                        subtitle_text = ""
-                        try:
-                            json_match = re.search(r'var ytInitialPlayerResponse = ({.*?});', html)
-                            if not json_match:
-                                json_match = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?})\s*;' , html)
-                            
-                            if json_match:
-                                data = json.loads(json_match.group(1))
-                                if 'captions' in data and 'playerCaptionsTracklistRenderer' in data['captions']:
-                                    tracks = data['captions']['playerCaptionsTracklistRenderer']['captionTracks']
-                                    if tracks:
-                                        selected_track = tracks[0] 
-                                        for track in tracks:
-                                            lang = track.get('name', {}).get('simpleText', '').lower()
-                                            if 'dutch' in lang or 'nederlands' in lang:
-                                                selected_track = track
-                                                break
-                                        
-                                        track_url = selected_track.get('baseUrl')
-                                        if track_url:
-                                            logger.info(f"Fetching manual subtitles from: {track_url[:50]}...")
-                                            sub_resp = requests.get(track_url)
-                                            if sub_resp.status_code == 200:
-                                                import html as html_lib
-                                                clean_subs = re.sub(r'<[^>]+>', ' ', sub_resp.text)
-                                                clean_subs = html_lib.unescape(clean_subs)
-                                                clean_subs = re.sub(r'\s+', ' ', clean_subs).strip()
-                                                subtitle_text = f"\n\n[MANUAL SUBTITLES]:\n{clean_subs}"
-                        except Exception as e_sub:
-                            logger.warning(f"Manual subtitle extraction failed: {e_sub}")
-
-                        if subtitle_text:
-                            description += subtitle_text
-
-                        # Fallback to Invidious if bad scrape
-                        if len(description) < 200 or "Before you continue" in title or "Unknown" in title:
-                            logger.warning("HTML extraction likely hit Consent Page. Trying Invidious Proxy...")
-                            info = extract_from_invidious(url.split("v=")[-1].split("&")[0])
-                        else:
-                             info = {
-                                'title': title,
-                                'description': description,
-                                'thumbnail': thumbnail,
-                                'id': 'unknown'
-                            }
-                    else:
-                        # Non-YouTube (TikTok, etc.) - Just return what we found
-                        logger.info(f"Generic HTML scrape successful for {url}")
-                        info = {
-                            'title': title,
-                            'description': description,
-                            'thumbnail': thumbnail,
-                            'id': 'unknown'
-                        }
-                    
-                except Exception as e4:
-                     # FALLBACK 4: Invidious Proxy (YouTube ONLY)
-                     if is_youtube:
-                         try:
-                            logger.info("HTML scraping failed completely. Trying Invidious Proxy...")
-                            video_id = url.split("v=")[-1].split("&")[0] 
-                            info = extract_from_invidious(video_id)
-                            
-                            # Manual Audio Download from Invidious if needed
-                            if extract_audio and info.get('audio_url') and not audio_path:
-                                try:
-                                    logger.info("Downloading audio directly from Invidious stream...")
-                                    inv_audio_url = info['audio_url']
-                                    # Use a distinct temp path
-                                    temp_inv_path = f"{tempfile.gettempdir()}/{video_id}_inv.mp3"
-                                    
-                                    # Stream download
-                                    r_inv = requests.get(inv_audio_url, stream=True, timeout=20)
-                                    if r_inv.status_code == 200:
-                                        with open(temp_inv_path, 'wb') as f:
-                                            for chunk in r_inv.iter_content(chunk_size=8192):
-                                                f.write(chunk)
-                                        audio_path = temp_inv_path
-                                        logger.info(f"Invidious audio saved to {audio_path}")
-                                    else:
-                                         logger.warning(f"Invidious audio stream fetch failed: {r_inv.status_code}")
-                                except Exception as e_inv_dl:
-                                    logger.warning(f"Invidious manual audio download failed: {e_inv_dl}")
-                         except Exception as e5:
-                             # FALLBACK 5: Piped API (when Invidious fails)
-                             logger.info(f"Invidious failed: {e5}. Trying Piped API...")
-                             try:
-                                 info = extract_from_piped(video_id)
-                                 
-                                 # Manual Audio Download from Piped if needed
-                                 if extract_audio and info.get('audio_url') and not audio_path:
-                                     try:
-                                         logger.info("Downloading audio directly from Piped stream...")
-                                         piped_audio_url = info['audio_url']
-                                         temp_piped_path = f"{tempfile.gettempdir()}/{video_id}_piped.mp3"
-                                         
-                                         r_piped = requests.get(piped_audio_url, stream=True, timeout=20, headers={'User-Agent': 'Mozilla/5.0'})
-                                         if r_piped.status_code == 200:
-                                             with open(temp_piped_path, 'wb') as f:
-                                                 for chunk in r_piped.iter_content(chunk_size=8192):
-                                                     f.write(chunk)
-                                             audio_path = temp_piped_path
-                                             logger.info(f"Piped audio saved to {audio_path}")
-                                         else:
-                                             logger.warning(f"Piped audio stream fetch failed: {r_piped.status_code}")
-                                     except Exception as e_piped_dl:
-                                         logger.warning(f"Piped manual audio download failed: {e_piped_dl}")
-                             except Exception as e6:
-                                 raise HTTPException(status_code=400, detail=f"All extraction methods failed. YouTube blocked us. Error: Invidious: {str(e5)}, Piped: {str(e6)}")
-                     else:
-                         # Non-YouTube: If generic scrape failed, we really are stuck.
-                         raise HTTPException(status_code=400, detail=f"Could not fetch video data. Platform may be blocking requests. Error: {str(e4)}")
-
-            else:
-                raise e
+                html = resp.text
+                title = "Unknown Recipe"
+                description = "No description available"
+                thumbnail = ""
+                
+                # --- Generic Scraping ---
+                # 1. Title
+                og_title = re.search(r'<meta property="og:title" content="(.*?)">', html)
+                title_tag = re.search(r'<title>(.*?)</title>', html)
+                if og_title:
+                    title = og_title.group(1)
+                elif title_tag:
+                    title = title_tag.group(1)
+                
+                # 2. Description
+                og_desc = re.search(r'<meta property="og:description" content="(.*?)">', html)
+                name_desc = re.search(r'<meta name="description" content="(.*?)">', html)
+                if og_desc:
+                    description = og_desc.group(1)
+                elif name_desc:
+                    description = name_desc.group(1)
+                
+                # 2b. TikTok SPECIFIC
+                if "tiktok.com" in url:
+                    try:
+                        next_data = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
+                        if next_data:
+                            tiktok_data = json.loads(next_data.group(1))
+                            item_info = tiktok_data.get('props', {}).get('pageProps', {}).get('itemInfo', {}).get('itemStruct', {})
+                            if item_info:
+                                tiktok_desc = item_info.get('desc', '')
+                                if tiktok_desc:
+                                    description = tiktok_desc
+                                # Also get thumbnail
+                                if 'video' in item_info:
+                                    thumbnail = item_info['video'].get('cover', thumbnail)
+                    except Exception as e_tt:
+                        logger.warning(f"TikTok JSON parsing failed: {e_tt}")
+                
+                # 3. Thumbnail
+                if not thumbnail:
+                    img_match = re.search(r'<meta property="og:image" content="(.*?)">', html)
+                    if img_match:
+                        thumbnail = img_match.group(1)
+                
+                info = {
+                    'title': title,
+                    'description': description,
+                    'thumbnail': thumbnail,
+                    'id': 'unknown'
+                }
+                
+            except Exception as e4:
+                # If generic scrape failed, we really are stuck.
+                logger.error(f"HTML scraping failed: {e4}")
+                raise HTTPException(status_code=400, detail=f"Could not fetch video data. Platform may be blocking requests. Error: {str(e4)}")
 
         try:
             if not info:
