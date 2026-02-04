@@ -11,6 +11,7 @@ import yt_dlp
 import requests
 import re
 from groq import Groq
+import html
 from dotenv import load_dotenv
 import tempfile
 from pathlib import Path
@@ -142,9 +143,6 @@ def get_video_data(url: str, extract_audio: bool = False):
             logger.warning(f"yt-dlp failed (Error: {str(e)}). Attempting direct HTML scraping...")
             
             # Request purely for HTML metadata
-            import requests
-            import re
-            
             try:
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -156,32 +154,32 @@ def get_video_data(url: str, extract_audio: bool = False):
                 if resp.status_code != 200:
                         raise Exception(f"HTML request failed: {resp.status_code}")
                         
-                html = resp.text
+                html_text = resp.text
                 title = "Unknown Recipe"
                 description = "No description available"
                 thumbnail = ""
                 
                 # --- Generic Scraping ---
                 # 1. Title
-                og_title = re.search(r'<meta property="og:title" content="([\s\S]*?)">', html)
-                title_tag = re.search(r'<title>([\s\S]*?)</title>', html)
+                og_title = re.search(r'<meta property="og:title" content="([^"]*)"', html_text)
+                title_tag = re.search(r'<title>([\s\S]*?)</title>', html_text)
                 if og_title:
-                    title = og_title.group(1)
+                    title = html.unescape(og_title.group(1))
                 elif title_tag:
-                    title = title_tag.group(1)
+                    title = html.unescape(title_tag.group(1))
                 
                 # 2. Description
-                og_desc = re.search(r'<meta property="og:description" content="([\s\S]*?)">', html)
-                name_desc = re.search(r'<meta name="description" content="([\s\S]*?)">', html)
+                og_desc = re.search(r'<meta property="og:description" content="([^"]*)"', html_text)
+                name_desc = re.search(r'<meta name="description" content="([^"]*)"', html_text)
                 if og_desc:
-                    description = og_desc.group(1)
+                    description = html.unescape(og_desc.group(1))
                 elif name_desc:
-                    description = name_desc.group(1)
+                    description = html.unescape(name_desc.group(1))
                 
                 # 2b. TikTok SPECIFIC
                 if "tiktok.com" in url:
                     try:
-                        next_data = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
+                        next_data = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html_text)
                         if next_data:
                             tiktok_data = json.loads(next_data.group(1))
                             item_info = tiktok_data.get('props', {}).get('pageProps', {}).get('itemInfo', {}).get('itemStruct', {})
@@ -197,9 +195,9 @@ def get_video_data(url: str, extract_audio: bool = False):
                 
                 # 3. Thumbnail
                 if not thumbnail:
-                    img_match = re.search(r'<meta property="og:image" content="([\s\S]*?)">', html)
+                    img_match = re.search(r'<meta property="og:image" content="([^"]*)"', html_text)
                     if img_match:
-                        thumbnail = img_match.group(1)
+                        thumbnail = html.unescape(img_match.group(1))
                 
                 info = {
                     'title': title,
