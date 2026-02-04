@@ -163,16 +163,16 @@ def get_video_data(url: str, extract_audio: bool = False):
                 
                 # --- Generic Scraping ---
                 # 1. Title
-                og_title = re.search(r'<meta property="og:title" content="(.*?)">', html)
-                title_tag = re.search(r'<title>(.*?)</title>', html)
+                og_title = re.search(r'<meta property="og:title" content="([\s\S]*?)">', html)
+                title_tag = re.search(r'<title>([\s\S]*?)</title>', html)
                 if og_title:
                     title = og_title.group(1)
                 elif title_tag:
                     title = title_tag.group(1)
                 
                 # 2. Description
-                og_desc = re.search(r'<meta property="og:description" content="(.*?)">', html)
-                name_desc = re.search(r'<meta name="description" content="(.*?)">', html)
+                og_desc = re.search(r'<meta property="og:description" content="([\s\S]*?)">', html)
+                name_desc = re.search(r'<meta name="description" content="([\s\S]*?)">', html)
                 if og_desc:
                     description = og_desc.group(1)
                 elif name_desc:
@@ -197,7 +197,7 @@ def get_video_data(url: str, extract_audio: bool = False):
                 
                 # 3. Thumbnail
                 if not thumbnail:
-                    img_match = re.search(r'<meta property="og:image" content="(.*?)">', html)
+                    img_match = re.search(r'<meta property="og:image" content="([\s\S]*?)">', html)
                     if img_match:
                         thumbnail = img_match.group(1)
                 
