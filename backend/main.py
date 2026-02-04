@@ -715,9 +715,32 @@ def check_db():
         return {"status": "error", "message": "Supabase client not initialized"}
     
     try:
-        # Try a simple read
+        # 1. Read test
         res = supabase.table("users").select("id").limit(1).execute()
-        return {"status": "ok", "message": "Database connection successful", "count": len(res.data)}
+        read_status = "ok"
+        
+        # 2. Write test (Insert a dummy recipe and then delete it)
+        # We use a zero-UUID for the user_id for this internal check
+        dummy_id = "00000000-0000-0000-0000-000000000000"
+        test_recipe = {
+            "user_id": dummy_id,
+            "title": "DB Check Recipe",
+            "description": "Verification of write access"
+        }
+        ins_res = supabase.table("recipes").insert(test_recipe).execute()
+        write_status = "ok"
+        
+        # Cleanup
+        if ins_res.data:
+             inner_id = ins_res.data[0]['id']
+             supabase.table("recipes").delete().eq("id", inner_id).execute()
+             
+        return {
+            "status": "ok", 
+            "read": read_status, 
+            "write": write_status,
+            "message": "Database connection and write access verified"
+        }
     except Exception as e:
         logger.error(f"DB Check Failed: {e}")
         return {"status": "error", "message": str(e)}
