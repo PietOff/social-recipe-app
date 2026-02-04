@@ -354,29 +354,33 @@ def extract_direct_video_url(url: str, html: str) -> Optional[str]:
         if og_video:
             return og_video.group(1)
             
-        # 2. Instagram JSON (sharedData)
-        if "instagram.com" in url:
-            shared_data = re.search(r'window\._sharedData\s*=\s*({.+?});', html)
-            if shared_data:
-                data = json.loads(shared_data.group(1))
-                # Deep traverse could be complex, simple string search for video_url might suffice
-                # or rely on og:video which usually works for Insta
-                pass
-
-        # 3. TikTok JSON
-        if "tiktok.com" in url:
-            # Try to find playAddr in nextjs data
-            next_data = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
-            if next_data:
-                data = json.loads(next_data.group(1))
-                # Traverse for 'playAddr'? 
-                # TikTok structure changes often. 
-                # Let's try a regex for contentUrl which is often in schema.org
-                pass
-            
-            content_url = re.search(r'"contentUrl":"(https://[^"]+?\.mp4[^"]*?)"', html)
-            if content_url:
-                return content_url.group(1).replace(r'\u0026', '&')
+        # 3. TikTok / Generic JSON Regex Scan
+        # Strategy: Look for specific keys like "playAddr", "videoUrl", "contentUrl"
+        # and extract the value, then decode unicode escapes.
+        
+        patterns = [
+            r'"playAddr":"(https?://[^"]+)"',       # Common TikTok
+            r'"video":\{[^}]*"url":"(https?://[^"]+)"', # Some variations
+            r'"contentUrl":"(https?://[^"]+)"',     # Schema.org
+            r'"downloadAddr":"(https?://[^"]+)"',   # TikTok download
+            r'"Url":"(https?://[^"]+)"',            # Generic
+            r'(https?://[^"\\\\]*tiktokcdn[^"\\\\]*?\.mp4[^"\\\\]*)', # Broad scan for TikTok CDN
+            r'(https?://[^"\\\\]*?\.mp4[^"\\\\]*)'  # ANY .mp4 URL (Last resort)
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, html)
+            if match:
+                raw_url = match.group(1)
+                # Decode unicode escapes (e.g. \u002F -> /)
+                # And HTML entities if any
+                clean_url = raw_url.encode('utf-8').decode('unicode_escape')
+                clean_url = clean_url.replace(r'\/', '/')
+                
+                # Check extension or domain to be sure
+                # Filter out small assets or weird matches
+                if (".mp4" in clean_url) and ("tiktokcdn" in clean_url or "fbcdn" in clean_url or "cdn" in clean_url):
+                     return clean_url
 
         return None
     except Exception as e:
