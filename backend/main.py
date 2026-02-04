@@ -9,6 +9,7 @@ from starlette.responses import Response
 from pydantic import BaseModel
 import yt_dlp
 import requests
+import re
 from groq import Groq
 from dotenv import load_dotenv
 import tempfile
