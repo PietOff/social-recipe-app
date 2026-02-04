@@ -546,8 +546,6 @@
     margin: 0 !important;
     max-width: none !important;
     width: 100% !important;
-    min-width: 800px !important;
-    /* Force desktop width for print layout */
     background: white !important;
     gap: 0 !important;
   }
@@ -595,11 +593,8 @@
   }
 
   .splitSection {
-    display: grid !important;
-    grid-template-columns: 35% 1fr !important;
-    gap: 2rem !important;
-    align-items: start !important;
-    margin-top: 2rem !important;
+    display: block !important;
+    margin-top: 1rem !important;
   }
 
   .ingredients {
@@ -616,8 +611,14 @@
   .ingredients h3,
   .instructions h3 {
     color: black !important;
-    border-bottom: 1px solid #eee;
+    border-bottom: 2px solid #333;
     padding-bottom: 5px;
-    margin-top: 0 !important;
+    margin-top: 1.5rem !important;
+    margin-bottom: 0.5rem !important;
+  }
+
+  /* Cleanup for cookbook specific print issues */
+  .cookbookImage {
+    display: none !important;
   }
 }

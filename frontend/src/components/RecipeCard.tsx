@@ -13,7 +13,7 @@ export default function RecipeCard({ recipe, onSave, isSaved }: RecipeCardProps)
         <div className={`glass-panel ${styles.card} animate-fade-in`}>
             {recipe.image_url && (
                 <div className={styles.imageContainer}>
-                    <img src={recipe.image_url} alt={recipe.title} className={styles.image} />
+                    <img src={recipe.image_url} alt={recipe.title} className={styles.image} referrerPolicy="no-referrer" />
                     {recipe.category && (
                         <span className={styles.categoryBadge} style={{
                             position: 'absolute',

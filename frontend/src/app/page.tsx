@@ -33,25 +33,35 @@ function HomeContent() {
 
   // Load saved recipes and user on mount
   React.useEffect(() => {
-    // Load user from localStorage
+    // 1. Immediately hydrate from cache (for instant visibility)
+    const cachedCookbook = localStorage.getItem('chefSocial_cached_cookbook');
+    if (cachedCookbook) {
+      try {
+        setSavedRecipes(JSON.parse(cachedCookbook));
+      } catch (e) {
+        console.error('Failed to parse cached cookbook', e);
+      }
+    }
+
+    // 2. Load user and sync
     const savedUser = localStorage.getItem('chefSocial_user');
     if (savedUser) {
       try {
         const parsedUser = JSON.parse(savedUser);
         setUser(parsedUser);
-        // Fetch recipes from cloud
+        // Refresh from cloud
         fetchCloudRecipes(parsedUser.token);
       } catch (e) {
         console.error('Failed to load user', e);
       }
     } else {
-      // Load local recipes if not logged in
+      // Fallback for legacy / non-logged-in users
       const saved = localStorage.getItem('chefSocial_cookbook');
-      if (saved) {
+      if (saved && !cachedCookbook) {
         try {
           setSavedRecipes(JSON.parse(saved));
         } catch (e) {
-          console.error('Failed to load cookbook', e);
+          console.error('Failed to load old cookbook', e);
         }
       }
     }
@@ -65,6 +75,8 @@ function HomeContent() {
       if (res.ok) {
         const recipes = await res.json();
         setSavedRecipes(recipes);
+        // Update cache for next load
+        localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(recipes));
       }
     } catch (e) {
       console.error('Failed to fetch cloud recipes', e);
@@ -331,6 +343,7 @@ function HomeContent() {
                     <img
                       src={user.avatar_url}
                       alt={user.name || 'User'}
+                      referrerPolicy="no-referrer"
                       style={{
                         width: 32,
                         height: 32,
@@ -526,6 +539,7 @@ function HomeContent() {
                         <img
                           src={r.image_url || r.image}
                           alt={r.title}
+                          referrerPolicy="no-referrer"
                           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                           onError={(e) => {
                             // Hide broken image and show emoji fallback
