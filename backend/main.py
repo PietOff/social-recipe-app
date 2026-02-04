@@ -606,31 +606,7 @@ def verify_jwt(authorization: str = Header(None)) -> dict:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
-@app.options("/auth/google")
-@app.options("/user/recipes")
-@app.options("/user/recipes/{recipe_id}")
-@app.options("/recipes")
-@app.options("/recipes/{recipe_id}")
-async def cors_preflight(request: Request):
-    """Handle CORS preflight for auth endpoints."""
-    origin = request.headers.get("origin", "")
-    # Log the preflight request for debugging
-    logger.info(f"CORS preflight request from origin: {origin}")
-    # Check if origin is in our allowed list
-    allowed_origin = origin if origin in origins else origins[0]
-    logger.info(f"CORS preflight response: allowing origin {allowed_origin}")
-    return Response(
-        content="OK",
-        status_code=200,
-        media_type="text/plain",
-        headers={
-            "Access-Control-Allow-Origin": allowed_origin,
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization",
-            "Access-Control-Allow-Credentials": "true",
-            "Access-Control-Max-Age": "86400",
-        }
-    )
+
 
 
 @app.post("/auth/google", response_model=UserResponse)
@@ -730,6 +706,21 @@ async def save_recipe(recipe: RecipeInput, user: dict = Depends(verify_jwt)):
     result = supabase.table("recipes").insert(recipe_data).execute()
     return result.data[0] if result.data else None
 
+
+@app.get("/check-db")
+def check_db():
+    """Diagnostic endpoint to verify database connection."""
+    supabase = get_supabase_client()
+    if not supabase:
+        return {"status": "error", "message": "Supabase client not initialized"}
+    
+    try:
+        # Try a simple read
+        res = supabase.table("users").select("id").limit(1).execute()
+        return {"status": "ok", "message": "Database connection successful", "count": len(res.data)}
+    except Exception as e:
+        logger.error(f"DB Check Failed: {e}")
+        return {"status": "error", "message": str(e)}
 
 @app.delete("/recipes/{recipe_id}")
 async def delete_recipe(recipe_id: str, user: dict = Depends(verify_jwt)):
