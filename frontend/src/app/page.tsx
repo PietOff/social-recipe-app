@@ -8,7 +8,7 @@ import { Recipe } from '../types';
 import styles from './page.module.css';
 
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || '';
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://social-recipe-appsocial-recipe-backend.onrender.com';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://social-recipe-backend.onrender.com';
 
 interface User {
   id: string;
@@ -131,12 +131,30 @@ function HomeContent() {
 
     if (isAlreadySaved) {
       // Remove recipe
+      // Find the ID of the recipe to delete from the saved list
+      const recipeToDelete = savedRecipes.find(r => r.title === recipeToSave.title);
       const newSaved = savedRecipes.filter(r => r.title !== recipeToSave.title);
       setSavedRecipes(newSaved);
+
       if (!user) {
         localStorage.setItem('chefSocial_cookbook', JSON.stringify(newSaved));
+      } else if (recipeToDelete?.id) {
+        // Cloud delete
+        try {
+          const res = await fetch(`${API_URL}/recipes/${recipeToDelete.id}`, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${user.token}`
+            }
+          });
+          if (!res.ok) {
+            console.error('Failed to delete from cloud');
+            // Revert optimistic update if needed, but for now just log
+          }
+        } catch (e) {
+          console.error('Failed to delete from cloud', e);
+        }
       }
-      // Note: Cloud delete would need recipe ID, skipping for now
     } else {
       // Add recipe
       if (user) {
