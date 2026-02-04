@@ -13,7 +13,16 @@ export default function RecipeCard({ recipe, onSave, isSaved }: RecipeCardProps)
         <div className={`glass-panel ${styles.card} animate-fade-in`}>
             {recipe.image_url && (
                 <div className={styles.imageContainer}>
-                    <img src={recipe.image_url} alt={recipe.title} className={styles.image} referrerPolicy="no-referrer" />
+                    <img
+                        src={recipe.image_url}
+                        alt={recipe.title}
+                        className={styles.image}
+                        referrerPolicy="no-referrer"
+                        onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                            // Optional: Show fallback
+                        }}
+                    />
                     {recipe.category && (
                         <span className={styles.categoryBadge} style={{
                             position: 'absolute',
@@ -96,7 +105,7 @@ export default function RecipeCard({ recipe, onSave, isSaved }: RecipeCardProps)
                                         {group}
                                     </h4>
                                 )}
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.8rem' }}>
+                                <ul style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.8rem', padding: 0, margin: 0, listStyle: 'none' }}>
                                     {grouped[group].map((ing, i) => {
                                         // Logic to clean up "400g g" -> "400g"
                                         let displayAmount = ing.amount || '';
@@ -122,7 +131,7 @@ export default function RecipeCard({ recipe, onSave, isSaved }: RecipeCardProps)
                                             </li>
                                         );
                                     })}
-                                </div>
+                                </ul>
                             </div>
                         ));
                     })()}
@@ -140,6 +149,6 @@ export default function RecipeCard({ recipe, onSave, isSaved }: RecipeCardProps)
                     ))}
                 </div>
             </div>
-        </div>
+        </div >
     );
 }

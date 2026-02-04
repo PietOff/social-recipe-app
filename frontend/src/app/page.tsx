@@ -182,7 +182,9 @@ function HomeContent() {
           });
           if (res.ok) {
             const savedRecipe = await res.json();
-            setSavedRecipes([savedRecipe, ...savedRecipes]);
+            const newSaved = [savedRecipe, ...savedRecipes];
+            setSavedRecipes(newSaved);
+            localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(newSaved));
           }
         } catch (e) {
           console.error('Failed to save to cloud', e);
@@ -232,12 +234,28 @@ function HomeContent() {
     }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!recipe) return;
     if (confirm("Are you sure you want to delete this recipe?")) {
       const updated = savedRecipes.filter(r => r.title !== recipe.title);
       setSavedRecipes(updated);
-      localStorage.setItem('chefSocial_cookbook', JSON.stringify(updated));
+
+      // Update appropriate storage
+      if (user) {
+        localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(updated));
+        // Also delete from cloud
+        if (recipe.id) {
+          try {
+            await fetch(`${API_URL}/recipes/${recipe.id}`, {
+              method: 'DELETE',
+              headers: { 'Authorization': `Bearer ${user.token}` }
+            });
+          } catch (e) { console.error("Cloud delete failed", e); }
+        }
+      } else {
+        localStorage.setItem('chefSocial_cookbook', JSON.stringify(updated));
+      }
+
       setRecipe(null);
       setView('cookbook');
     }
