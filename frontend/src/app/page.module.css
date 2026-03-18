@@ -881,7 +881,6 @@
   }
 
   /* Hide images - they render as black blocks in mobile Safari print */
-  img,
   .cookbookImage {
     display: none !important;
   }
