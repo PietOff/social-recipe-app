@@ -873,7 +873,10 @@
   .iconButton,
   .cookbookSection,
   .backButton,
-  .saveButton {
+  .saveButton,
+  .navButtons,
+  .authArea,
+  .filterContainer {
     display: none !important;
   }
 
@@ -887,6 +890,7 @@
     width: 100% !important;
     background: white !important;
     gap: 0 !important;
+    min-height: unset !important;
   }
 
   /* Recipe Card Styling for Paper */
@@ -895,68 +899,92 @@
     border: none !important;
     box-shadow: none !important;
     padding: 0 !important;
-    /* Let page margins handle spacing */
     color: black !important;
     margin: 0 !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
   }
 
   .recipeTitle {
     color: black !important;
-    font-size: 24pt !important;
-    text-align: center;
-    margin-bottom: 20pt;
+    font-size: 18pt !important;
+    text-align: left;
+    margin-bottom: 4pt;
     background: none !important;
     -webkit-text-fill-color: black !important;
+    line-height: 1.2 !important;
   }
 
   .recipeDesc {
-    color: #444 !important;
+    color: #555 !important;
     font-style: italic;
-    text-align: center;
-    margin-bottom: 20pt;
+    font-size: 9.5pt !important;
+    margin-bottom: 4pt !important;
   }
 
   .metaGrid {
     border-top: 1px solid #ddd;
     border-bottom: 1px solid #ddd;
-    padding: 10pt 0;
-    margin-bottom: 20pt;
+    padding: 4pt 0 !important;
+    margin: 6pt 0 !important;
     color: black !important;
     background: none !important;
+    display: flex !important;
+    flex-direction: row !important;
+    gap: 1.5rem !important;
+    justify-content: flex-start !important;
   }
 
   .metaItem {
     background: none !important;
     color: black !important;
     border: none !important;
+    font-size: 9pt !important;
+    padding: 0 !important;
   }
 
+  /* Two column layout for ingredients/instructions - saves vertical space */
   .splitSection {
-    display: block !important;
-    margin-top: 1rem !important;
+    display: grid !important;
+    grid-template-columns: 1fr 1.4fr !important;
+    gap: 1.2rem !important;
+    margin-top: 6pt !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    clear: both !important;
   }
 
-  .ingredients {
-    border-right: 1px solid #ddd !important;
-    padding-right: 1.5rem !important;
-    margin-bottom: 0 !important;
-  }
-
+  .ingredients,
   .instructions {
-    margin-bottom: 0 !important;
-    padding-left: 0 !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
   }
 
   .ingredients h3,
   .instructions h3 {
     color: black !important;
-    border-bottom: 2px solid #333;
-    padding-bottom: 5px;
-    margin-top: 1.5rem !important;
-    margin-bottom: 0.5rem !important;
+    border-bottom: 1.5px solid #333;
+    padding-bottom: 3px;
+    margin-top: 0 !important;
+    margin-bottom: 4pt !important;
+    font-size: 11pt !important;
   }
 
-  /* Cleanup for cookbook specific print issues */
+  .ingredients ul,
+  .instructions ol {
+    padding-left: 1.1rem !important;
+    margin: 0 !important;
+  }
+
+  .ingredients li,
+  .instructions li {
+    font-size: 9.5pt !important;
+    line-height: 1.4 !important;
+    margin-bottom: 2pt !important;
+    color: black !important;
+  }
+
+  /* Cookbook image - hide in print */
   .cookbookImage {
     display: none !important;
   }
