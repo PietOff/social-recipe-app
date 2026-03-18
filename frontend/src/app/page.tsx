@@ -341,19 +341,14 @@ function HomeContent() {
     <main className={styles.main}>
       <div className={styles.container}>
         <header className={styles.header}>
-          <div className={styles.logoAndTitle} style={{ position: 'relative' }}>
+          <div className={styles.headerTop}>
             <h1 className={styles.logo}>Chef<span className={styles.highlight}>Social</span></h1>
 
             {/* User Auth Area */}
-            <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)' }}>
+            <div className={styles.authArea}>
               {user ? (
                 <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.5rem',
-                    cursor: 'pointer'
-                  }}
+                  className={styles.userChip}
                   onClick={handleLogout}
                   title="Click to logout"
                 >
@@ -362,15 +357,10 @@ function HomeContent() {
                       src={user.avatar_url}
                       alt={user.name || 'User'}
                       referrerPolicy="no-referrer"
-                      style={{
-                        width: 32,
-                        height: 32,
-                        borderRadius: '50%',
-                        border: '2px solid rgba(255,255,255,0.3)'
-                      }}
+                      className={styles.avatar}
                     />
                   )}
-                  <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>
+                  <span className={styles.userName}>
                     {user.name?.split(' ')[0] || 'User'}
                   </span>
                 </div>
@@ -388,7 +378,7 @@ function HomeContent() {
           </div>
 
           {/* NAVIGATION BUTTONS */}
-          <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1.5rem' }}>
+          <div className={styles.navButtons}>
             <button
               onClick={() => setView('home')}
               className={styles.button}
@@ -421,6 +411,11 @@ function HomeContent() {
                 <form onSubmit={handleExtract} className={styles.form}>
                   <input
                     type="url"
+                    inputMode="url"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    autoComplete="off"
+                    spellCheck={false}
                     placeholder="Paste TikTok, Instagram or YouTube link..."
                     value={url}
                     onChange={(e) => setUrl(e.target.value)}
