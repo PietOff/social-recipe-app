@@ -880,6 +880,12 @@
     display: none !important;
   }
 
+  /* Hide images - they render as black blocks in mobile Safari print */
+  img,
+  .cookbookImage {
+    display: none !important;
+  }
+
   /* Reset Main Container */
   .main,
   .container,
