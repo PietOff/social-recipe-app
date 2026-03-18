@@ -186,7 +186,7 @@ function HomeContent() {
         }
       }
     } else {
-      // Optimistic update â show saved immediately regardless of cloud result
+      // Optimistic update — show saved immediately regardless of cloud result
       const optimistic = [recipeToSave, ...savedRecipes];
       setSavedRecipes(optimistic);
 
@@ -207,11 +207,11 @@ function HomeContent() {
             localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify([savedRecipe, ...savedRecipes]));
           } else {
               if (res.status === 401) { handleAuthError(); return; }
-            // Cloud failed â keep the optimistic save in local cache
+            // Cloud failed — keep the optimistic save in local cache
             localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(optimistic));
           }
         } catch (e) {
-          // Network error â keep locally so the user doesn't lose their save
+          // Network error — keep locally so the user doesn't lose their save
           localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(optimistic));
         }
       } else {
@@ -419,7 +419,7 @@ function HomeContent() {
                 opacity: view === 'cookbook' ? 1 : 0.7
               }}
             >
-              ð Cookbook
+              📚 Cookbook
             </button>
           </div>
         </header>
@@ -450,16 +450,16 @@ function HomeContent() {
                 </form>
               )}
 
-              {error && <div className={styles.error}>{error}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>ð¡ Tip: Try using TikTok or Instagram links instead</small></>}</div>}
+              {error && <div className={styles.error}>{error}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>💡 Tip: Try using TikTok or Instagram links instead</small></>}</div>}
 
               {recipe && (
                 <div className={styles.recipeCard}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
                     <h2 className={styles.recipeTitle}>{recipe.title}</h2>
                     <div style={{ display: 'flex', gap: '0.5rem' }}>
-                      <button onClick={handlePrint} className={styles.iconButton} title="Save as PDF">ð¨ï¸</button>
-                      <button onClick={handleDelete} className={styles.iconButton} title="Delete Recipe" style={{ color: '#ff6b6b' }}>ðï¸</button>
-                      <button onClick={() => setRecipe(null)} className={styles.iconButton} style={{ opacity: 0.6 }}>Ã</button>
+                      <button onClick={handlePrint} className={styles.iconButton} title="Save as PDF">🖨️</button>
+                      <button onClick={handleDelete} className={styles.iconButton} title="Delete Recipe" style={{ color: '#ff6b6b' }}>🗑️</button>
+                      <button onClick={() => setRecipe(null)} className={styles.iconButton} style={{ opacity: 0.6 }}>×</button>
                     </div>
                   </div>
                   <p className={styles.recipeDesc}>{recipe.description}</p>
@@ -474,9 +474,9 @@ function HomeContent() {
                   </div>
 
                   <div className={styles.metaGrid}>
-                    <div className={styles.metaItem}>â± {recipe.prep_time || '--'}</div>
-                    <div className={styles.metaItem}>ð¥ {recipe.cook_time || '--'}</div>
-                    <div className={styles.metaItem}>ð¥ {recipe.servings || '--'}</div>
+                    <div className={styles.metaItem}>⏱ {recipe.prep_time || '--'}</div>
+                    <div className={styles.metaItem}>🔥 {recipe.cook_time || '--'}</div>
+                    <div className={styles.metaItem}>👥 {recipe.servings || '--'}</div>
                   </div>
 
                   <div className={styles.splitSection}>
@@ -592,7 +592,7 @@ function HomeContent() {
                           }}
                         />
                       ) : null}
-                      <span style={{ fontSize: '2rem', display: (r.image_url || r.image) ? 'none' : 'block' }}>ð³</span>
+                      <span style={{ fontSize: '2rem', display: (r.image_url || r.image) ? 'none' : 'block' }}>🍳</span>
                     </div>
                     <div className={styles.cookbookContent}>
                       <h4>{r.title}</h4>
