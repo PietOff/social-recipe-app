@@ -20,6 +20,7 @@ import subprocess
 import jwt
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
+from datetime import datetime, timedelta
 
 # Load env vars
 load_dotenv()
@@ -700,7 +701,9 @@ async def save_recipe(recipe: RecipeInput, user: dict = Depends(verify_jwt)):
     }
     
     result = supabase.table("recipes").insert(recipe_data).execute()
-    return result.data[0] if result.data else None
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Recipe insert failed — check Supabase RLS policies")
+    return result.data[0]
 
 
 @app.get("/check-db")
@@ -711,32 +714,8 @@ def check_db():
         return {"status": "error", "message": "Supabase client not initialized"}
     
     try:
-        # 1. Read test
         res = supabase.table("users").select("id").limit(1).execute()
-        read_status = "ok"
-        
-        # 2. Write test (Insert a dummy recipe and then delete it)
-        # We use a zero-UUID for the user_id for this internal check
-        dummy_id = "00000000-0000-0000-0000-000000000000"
-        test_recipe = {
-            "user_id": dummy_id,
-            "title": "DB Check Recipe",
-            "description": "Verification of write access"
-        }
-        ins_res = supabase.table("recipes").insert(test_recipe).execute()
-        write_status = "ok"
-        
-        # Cleanup
-        if ins_res.data:
-             inner_id = ins_res.data[0]['id']
-             supabase.table("recipes").delete().eq("id", inner_id).execute()
-             
-        return {
-            "status": "ok", 
-            "read": read_status, 
-            "write": write_status,
-            "message": "Database connection and write access verified"
-        }
+        return {"status": "ok", "message": "Database connection verified"}
     except Exception as e:
         logger.error(f"DB Check Failed: {e}")
         return {"status": "error", "message": str(e)}
@@ -757,5 +736,3 @@ async def delete_recipe(recipe_id: str, user: dict = Depends(verify_jwt)):
     return {"deleted": True, "id": recipe_id}
 
 
-# Import datetime for JWT expiration
-from datetime import datetime, timedelta
