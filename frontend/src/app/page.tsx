@@ -24,6 +24,8 @@ function HomeContent() {
   const [error, setError] = useState<string | null>(null);
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [savedRecipes, setSavedRecipes] = useState<Recipe[]>([]);
+  const [cookbookLoading, setCookbookLoading] = useState(false);
+  const [cookbookError, setCookbookError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
@@ -68,6 +70,8 @@ function HomeContent() {
   }, []);
 
   const fetchCloudRecipes = async (token: string) => {
+    setCookbookLoading(true);
+    setCookbookError(null);
     try {
       const res = await fetch(`${API_URL}/recipes`, {
         headers: { 'Authorization': `Bearer ${token}` }
@@ -75,11 +79,14 @@ function HomeContent() {
       if (res.ok) {
         const recipes = await res.json();
         setSavedRecipes(recipes);
-        // Update cache for next load
         localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(recipes));
+      } else {
+        setCookbookError('Could not load your recipes from the cloud. Showing cached data.');
       }
     } catch (e) {
-      console.error('Failed to fetch cloud recipes', e);
+      setCookbookError('Could not reach the server. Showing cached data.');
+    } finally {
+      setCookbookLoading(false);
     }
   };
 
@@ -543,9 +550,17 @@ function HomeContent() {
                 ))}
               </div>
 
+              {cookbookError && (
+                <div className={styles.error} style={{ marginBottom: '1rem' }}>{cookbookError}</div>
+              )}
+
               {/* Grid View */}
               <div className={styles.cookbookGrid}>
-                {filteredRecipes.map((r, idx) => (
+                {cookbookLoading && savedRecipes.length === 0 ? (
+                  <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>
+                    Loading your recipes...
+                  </p>
+                ) : filteredRecipes.map((r, idx) => (
                   <div key={idx} className={styles.cookbookItem} onClick={() => { setRecipe(r); setView('details'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
                     <div className={styles.cookbookImage}>
                       {(r.image_url || r.image) ? (
@@ -574,9 +589,14 @@ function HomeContent() {
                     </div>
                   </div>
                 ))}
-                {filteredRecipes.length === 0 && (
+                {!cookbookLoading && filteredRecipes.length === 0 && savedRecipes.length > 0 && (
                   <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>
-                    No recipes found.
+                    No recipes match your filter.
+                  </p>
+                )}
+                {!cookbookLoading && savedRecipes.length === 0 && (
+                  <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>
+                    No recipes saved yet. Extract one to get started!
                   </p>
                 )}
               </div>
