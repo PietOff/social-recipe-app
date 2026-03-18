@@ -175,9 +175,11 @@ function HomeContent() {
         }
       }
     } else {
-      // Add recipe
+      // Optimistic update — show saved immediately regardless of cloud result
+      const optimistic = [recipeToSave, ...savedRecipes];
+      setSavedRecipes(optimistic);
+
       if (user) {
-        // Save to cloud
         try {
           const res = await fetch(`${API_URL}/recipes`, {
             method: 'POST',
@@ -188,19 +190,20 @@ function HomeContent() {
             body: JSON.stringify(recipeToSave)
           });
           if (res.ok) {
+            // Replace optimistic entry with server version (gets a real DB id)
             const savedRecipe = await res.json();
-            const newSaved = [savedRecipe, ...savedRecipes];
-            setSavedRecipes(newSaved);
-            localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(newSaved));
+            setSavedRecipes(prev => [savedRecipe, ...prev.filter(r => r.title !== recipeToSave.title)]);
+            localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify([savedRecipe, ...savedRecipes]));
+          } else {
+            // Cloud failed — keep the optimistic save in local cache
+            localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(optimistic));
           }
         } catch (e) {
-          console.error('Failed to save to cloud', e);
+          // Network error — keep locally so the user doesn't lose their save
+          localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(optimistic));
         }
       } else {
-        // Save locally
-        const newSaved = [recipeToSave, ...savedRecipes];
-        setSavedRecipes(newSaved);
-        localStorage.setItem('chefSocial_cookbook', JSON.stringify(newSaved));
+        localStorage.setItem('chefSocial_cookbook', JSON.stringify(optimistic));
       }
     }
   };
