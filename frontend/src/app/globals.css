@@ -94,6 +94,11 @@ a {
 }
 
 /* --- GLOBAL PRINT STYLES --- */
+@page {
+  size: A4 portrait;
+  margin: 15mm 15mm 15mm 15mm;
+}
+
 @media print {
 
   /* Hide UI Elements */
@@ -120,6 +125,8 @@ a {
     margin: 0 !important;
     max-width: 100% !important;
     overflow: visible !important;
+    font-size: 10pt !important;
+    line-height: 1.4 !important;
   }
 
   /* Main Container Reset */
@@ -133,6 +140,7 @@ a {
     background: white !important;
     box-shadow: none !important;
     border: none !important;
+    min-height: unset !important;
   }
 
   /* Recipe Card Optimization */
@@ -150,55 +158,106 @@ a {
 
   /* Typography */
   h2 {
-    font-size: 24pt !important;
-    margin-bottom: 10pt !important;
+    font-size: 18pt !important;
+    margin-bottom: 4pt !important;
     color: black !important;
-  }
-
-  p {
-    font-size: 12pt !important;
-    line-height: 1.5 !important;
-    color: #333 !important;
-  }
-
-  /* Image Handling */
-  img {
-    max-height: 300px !important;
-    object-fit: contain !important;
-    border-radius: 8px !important;
-    margin-bottom: 1rem !important;
-  }
-
-  /* Layout Adjustments */
-  [class*="metaGrid"] {
-    border-top: 1px solid #ddd;
-    border-bottom: 1px solid #ddd;
-    padding: 10px 0 !important;
-    margin: 15px 0 !important;
-    background: transparent !important;
-  }
-
-  [class*="metaItem"] {
-    color: black !important;
-  }
-
-  /* Two Column Layout for Ingredients/Instructions */
-  [class*="splitSection"] {
-    display: flex !important;
-    flex-direction: row !important;
-    gap: 2rem !important;
-  }
-
-  [class*="ingredients"],
-  [class*="instructions"] {
-    flex: 1 !important;
+    -webkit-text-fill-color: black !important;
+    background: none !important;
+    line-height: 1.2 !important;
   }
 
   h3 {
     color: black !important;
-    border-bottom: 2px solid black;
-    padding-bottom: 5pt;
-    margin-top: 0 !important;
-    font-size: 16pt !important;
+    border-bottom: 1.5px solid #333;
+    padding-bottom: 3pt;
+    margin-top: 8pt !important;
+    margin-bottom: 4pt !important;
+    font-size: 11pt !important;
+  }
+
+  p {
+    font-size: 10pt !important;
+    line-height: 1.4 !important;
+    color: #333 !important;
+    margin-bottom: 4pt !important;
+  }
+
+  li {
+    font-size: 9.5pt !important;
+    line-height: 1.4 !important;
+    margin-bottom: 2pt !important;
+    color: black !important;
+  }
+
+  /* Image: small, floated right */
+  img {
+    max-height: 130px !important;
+    max-width: 220px !important;
+    width: auto !important;
+    object-fit: cover !important;
+    border-radius: 6px !important;
+    float: right !important;
+    margin: 0 0 8pt 12pt !important;
+    display: block !important;
+  }
+
+  /* Meta grid - compact horizontal */
+  [class*="metaGrid"] {
+    display: flex !important;
+    flex-direction: row !important;
+    gap: 1.5rem !important;
+    border-top: 1px solid #ddd;
+    border-bottom: 1px solid #ddd;
+    padding: 4pt 0 !important;
+    margin: 6pt 0 !important;
+    background: transparent !important;
+    justify-content: flex-start !important;
+  }
+
+  [class*="metaItem"] {
+    color: black !important;
+    background: none !important;
+    border: none !important;
+    font-size: 9pt !important;
+    padding: 0 !important;
+  }
+
+  /* Two Column Layout for Ingredients/Instructions */
+  [class*="splitSection"] {
+    display: grid !important;
+    grid-template-columns: 1fr 1.4fr !important;
+    gap: 1.2rem !important;
+    margin-top: 6pt !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    clear: both !important;
+  }
+
+  [class*="ingredients"],
+  [class*="instructions"] {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  [class*="ingredients"] ul,
+  [class*="instructions"] ol {
+    padding-left: 1.1rem !important;
+    margin: 0 !important;
+  }
+
+  /* Description */
+  [class*="recipeDesc"] {
+    font-style: italic;
+    color: #555 !important;
+    font-size: 9.5pt !important;
+    margin-bottom: 4pt !important;
+  }
+
+  /* Ensure recipe tries to stay on one page */
+  [class*="recipeCard"] {
+    page-break-before: avoid !important;
+    break-before: avoid !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
   }
 }
