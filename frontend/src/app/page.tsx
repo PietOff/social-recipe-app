@@ -80,6 +80,9 @@ function HomeContent() {
         const recipes = await res.json();
         setSavedRecipes(recipes);
         localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(recipes));
+      } else if (res.status === 401) {
+        handleAuthError();
+        return;
       } else {
         setCookbookError('Could not load your recipes from the cloud. Showing cached data.');
       }
@@ -144,6 +147,13 @@ function HomeContent() {
     localStorage.removeItem('chefSocial_user');
     setSavedRecipes([]);
   };
+  const handleAuthError = () => {
+    setUser(null);
+    localStorage.removeItem('chefSocial_user');
+    setSavedRecipes([]);
+    setCookbookError('Your session has expired. Please sign in again.');
+  };
+
 
   const saveRecipe = async (recipeToSave: Recipe) => {
     const isAlreadySaved = savedRecipes.some(r => r.title === recipeToSave.title);
@@ -167,6 +177,7 @@ function HomeContent() {
             }
           });
           if (!res.ok) {
+              if (res.status === 401) { handleAuthError(); return; }
             console.error('Failed to delete from cloud');
             // Revert optimistic update if needed, but for now just log
           }
@@ -175,7 +186,7 @@ function HomeContent() {
         }
       }
     } else {
-      // Optimistic update — show saved immediately regardless of cloud result
+      // Optimistic update â show saved immediately regardless of cloud result
       const optimistic = [recipeToSave, ...savedRecipes];
       setSavedRecipes(optimistic);
 
@@ -195,11 +206,12 @@ function HomeContent() {
             setSavedRecipes(prev => [savedRecipe, ...prev.filter(r => r.title !== recipeToSave.title)]);
             localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify([savedRecipe, ...savedRecipes]));
           } else {
-            // Cloud failed — keep the optimistic save in local cache
+              if (res.status === 401) { handleAuthError(); return; }
+            // Cloud failed â keep the optimistic save in local cache
             localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(optimistic));
           }
         } catch (e) {
-          // Network error — keep locally so the user doesn't lose their save
+          // Network error â keep locally so the user doesn't lose their save
           localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(optimistic));
         }
       } else {
@@ -407,7 +419,7 @@ function HomeContent() {
                 opacity: view === 'cookbook' ? 1 : 0.7
               }}
             >
-              📚 Cookbook
+              ð Cookbook
             </button>
           </div>
         </header>
@@ -438,16 +450,16 @@ function HomeContent() {
                 </form>
               )}
 
-              {error && <div className={styles.error}>{error}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>💡 Tip: Try using TikTok or Instagram links instead</small></>}</div>}
+              {error && <div className={styles.error}>{error}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>ð¡ Tip: Try using TikTok or Instagram links instead</small></>}</div>}
 
               {recipe && (
                 <div className={styles.recipeCard}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
                     <h2 className={styles.recipeTitle}>{recipe.title}</h2>
                     <div style={{ display: 'flex', gap: '0.5rem' }}>
-                      <button onClick={handlePrint} className={styles.iconButton} title="Save as PDF">🖨️</button>
-                      <button onClick={handleDelete} className={styles.iconButton} title="Delete Recipe" style={{ color: '#ff6b6b' }}>🗑️</button>
-                      <button onClick={() => setRecipe(null)} className={styles.iconButton} style={{ opacity: 0.6 }}>×</button>
+                      <button onClick={handlePrint} className={styles.iconButton} title="Save as PDF">ð¨ï¸</button>
+                      <button onClick={handleDelete} className={styles.iconButton} title="Delete Recipe" style={{ color: '#ff6b6b' }}>ðï¸</button>
+                      <button onClick={() => setRecipe(null)} className={styles.iconButton} style={{ opacity: 0.6 }}>Ã</button>
                     </div>
                   </div>
                   <p className={styles.recipeDesc}>{recipe.description}</p>
@@ -462,9 +474,9 @@ function HomeContent() {
                   </div>
 
                   <div className={styles.metaGrid}>
-                    <div className={styles.metaItem}>⏱ {recipe.prep_time || '--'}</div>
-                    <div className={styles.metaItem}>🔥 {recipe.cook_time || '--'}</div>
-                    <div className={styles.metaItem}>👥 {recipe.servings || '--'}</div>
+                    <div className={styles.metaItem}>â± {recipe.prep_time || '--'}</div>
+                    <div className={styles.metaItem}>ð¥ {recipe.cook_time || '--'}</div>
+                    <div className={styles.metaItem}>ð¥ {recipe.servings || '--'}</div>
                   </div>
 
                   <div className={styles.splitSection}>
@@ -580,7 +592,7 @@ function HomeContent() {
                           }}
                         />
                       ) : null}
-                      <span style={{ fontSize: '2rem', display: (r.image_url || r.image) ? 'none' : 'block' }}>🍳</span>
+                      <span style={{ fontSize: '2rem', display: (r.image_url || r.image) ? 'none' : 'block' }}>ð³</span>
                     </div>
                     <div className={styles.cookbookContent}>
                       <h4>{r.title}</h4>
