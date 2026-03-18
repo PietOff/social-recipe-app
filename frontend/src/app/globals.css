@@ -189,16 +189,9 @@ a {
     color: black !important;
   }
 
-  /* Image: small, floated right */
+  /* Hide images in print - they render as black blocks on mobile Safari */
   img {
-    max-height: 130px !important;
-    max-width: 220px !important;
-    width: auto !important;
-    object-fit: cover !important;
-    border-radius: 6px !important;
-    float: right !important;
-    margin: 0 0 8pt 12pt !important;
-    display: block !important;
+    display: none !important;
   }
 
   /* Meta grid - compact horizontal */
@@ -230,7 +223,6 @@ a {
     margin-top: 6pt !important;
     page-break-inside: avoid !important;
     break-inside: avoid !important;
-    clear: both !important;
   }
 
   [class*="ingredients"],
