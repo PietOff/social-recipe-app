@@ -24,6 +24,8 @@ function HomeContent() {
   const [error, setError] = useState<string | null>(null);
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [savedRecipes, setSavedRecipes] = useState<Recipe[]>([]);
+  const [cookbookLoading, setCookbookLoading] = useState(false);
+  const [cookbookError, setCookbookError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
@@ -68,6 +70,8 @@ function HomeContent() {
   }, []);
 
   const fetchCloudRecipes = async (token: string) => {
+    setCookbookLoading(true);
+    setCookbookError(null);
     try {
       const res = await fetch(`${API_URL}/recipes`, {
         headers: { 'Authorization': `Bearer ${token}` }
@@ -75,11 +79,14 @@ function HomeContent() {
       if (res.ok) {
         const recipes = await res.json();
         setSavedRecipes(recipes);
-        // Update cache for next load
         localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(recipes));
+      } else {
+        setCookbookError('Could not load your recipes from the cloud. Showing cached data.');
       }
     } catch (e) {
-      console.error('Failed to fetch cloud recipes', e);
+      setCookbookError('Could not reach the server. Showing cached data.');
+    } finally {
+      setCookbookLoading(false);
     }
   };
 
@@ -341,19 +348,14 @@ function HomeContent() {
     <main className={styles.main}>
       <div className={styles.container}>
         <header className={styles.header}>
-          <div className={styles.logoAndTitle} style={{ position: 'relative' }}>
+          <div className={styles.headerTop}>
             <h1 className={styles.logo}>Chef<span className={styles.highlight}>Social</span></h1>
 
             {/* User Auth Area */}
-            <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)' }}>
+            <div className={styles.authArea}>
               {user ? (
                 <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.5rem',
-                    cursor: 'pointer'
-                  }}
+                  className={styles.userChip}
                   onClick={handleLogout}
                   title="Click to logout"
                 >
@@ -362,15 +364,10 @@ function HomeContent() {
                       src={user.avatar_url}
                       alt={user.name || 'User'}
                       referrerPolicy="no-referrer"
-                      style={{
-                        width: 32,
-                        height: 32,
-                        borderRadius: '50%',
-                        border: '2px solid rgba(255,255,255,0.3)'
-                      }}
+                      className={styles.avatar}
                     />
                   )}
-                  <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>
+                  <span className={styles.userName}>
                     {user.name?.split(' ')[0] || 'User'}
                   </span>
                 </div>
@@ -388,7 +385,7 @@ function HomeContent() {
           </div>
 
           {/* NAVIGATION BUTTONS */}
-          <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1.5rem' }}>
+          <div className={styles.navButtons}>
             <button
               onClick={() => setView('home')}
               className={styles.button}
@@ -421,6 +418,11 @@ function HomeContent() {
                 <form onSubmit={handleExtract} className={styles.form}>
                   <input
                     type="url"
+                    inputMode="url"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    autoComplete="off"
+                    spellCheck={false}
                     placeholder="Paste TikTok, Instagram or YouTube link..."
                     value={url}
                     onChange={(e) => setUrl(e.target.value)}
@@ -548,9 +550,17 @@ function HomeContent() {
                 ))}
               </div>
 
+              {cookbookError && (
+                <div className={styles.error} style={{ marginBottom: '1rem' }}>{cookbookError}</div>
+              )}
+
               {/* Grid View */}
               <div className={styles.cookbookGrid}>
-                {filteredRecipes.map((r, idx) => (
+                {cookbookLoading && savedRecipes.length === 0 ? (
+                  <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>
+                    Loading your recipes...
+                  </p>
+                ) : filteredRecipes.map((r, idx) => (
                   <div key={idx} className={styles.cookbookItem} onClick={() => { setRecipe(r); setView('details'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
                     <div className={styles.cookbookImage}>
                       {(r.image_url || r.image) ? (
@@ -579,9 +589,14 @@ function HomeContent() {
                     </div>
                   </div>
                 ))}
-                {filteredRecipes.length === 0 && (
+                {!cookbookLoading && filteredRecipes.length === 0 && savedRecipes.length > 0 && (
                   <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>
-                    No recipes found.
+                    No recipes match your filter.
+                  </p>
+                )}
+                {!cookbookLoading && savedRecipes.length === 0 && (
+                  <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>
+                    No recipes saved yet. Extract one to get started!
                   </p>
                 )}
               </div>

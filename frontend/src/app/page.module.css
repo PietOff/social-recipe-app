@@ -15,7 +15,12 @@
 
 .main {
   min-height: 100vh;
+  min-height: 100dvh;
   padding: 4rem 1.5rem;
+  padding-top: max(4rem, calc(2rem + env(safe-area-inset-top)));
+  padding-bottom: max(4rem, calc(2rem + env(safe-area-inset-bottom)));
+  padding-left: max(1.5rem, env(safe-area-inset-left));
+  padding-right: max(1.5rem, env(safe-area-inset-right));
   background: #0f0f13;
   /* Dark Premium Background */
   background-image:
@@ -38,12 +43,64 @@
   animation: fadeIn 0.8s ease-out;
 }
 
+.headerTop {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+  position: relative;
+}
+
 .logoAndTitle {
   display: flex;
   justify-content: center;
   align-items: center;
   gap: 1rem;
   margin-bottom: 0.5rem;
+}
+
+.authArea {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.userChip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  padding: 0.25rem;
+  border-radius: 20px;
+  -webkit-tap-highlight-color: transparent;
+  min-height: 44px;
+}
+
+.avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  flex-shrink: 0;
+}
+
+.userName {
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+
+.navButtons {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  margin-top: 1.5rem;
+}
+
+.navButtons .button {
+  min-height: 44px;
+  padding: 0 1.5rem;
 }
 
 .logo {
@@ -117,6 +174,11 @@
 .button:hover {
   transform: translateY(-1px);
   filter: brightness(1.1);
+}
+
+.button:active {
+  transform: translateY(0);
+  filter: brightness(0.9);
 }
 
 .button:disabled {
@@ -254,7 +316,7 @@
   border-radius: 20px;
   color: #fff;
   outline: none;
-  font-size: 0.9rem;
+  font-size: 1rem; /* 16px minimum prevents iOS auto-zoom */
   min-width: 200px;
 }
 
@@ -278,12 +340,16 @@
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: var(--text-secondary);
-  padding: 0.5rem 1rem;
+  padding: 0.65rem 1rem;
   border-radius: 20px;
   font-size: 0.85rem;
   cursor: pointer;
   white-space: nowrap;
   transition: all 0.2s;
+  min-height: 44px; /* iOS minimum tap target */
+  display: flex;
+  align-items: center;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .filterChip:hover {
@@ -304,8 +370,8 @@
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.2);
   color: white;
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   cursor: pointer;
   display: flex;
@@ -313,6 +379,7 @@
   justify-content: center;
   font-size: 1.2rem;
   transition: all 0.2s;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .backButton:hover {
@@ -445,6 +512,8 @@
 @media (max-width: 600px) {
   .main {
     padding: 2rem 1rem;
+    padding-top: max(2rem, calc(1rem + env(safe-area-inset-top)));
+    padding-bottom: max(2rem, calc(1rem + env(safe-area-inset-bottom)));
   }
 
   .logo {
@@ -460,7 +529,6 @@
     flex-direction: row;
   }
 
-  /* Keep row even on mobile if possible, or stack */
   .button {
     padding: 0 1rem;
   }
@@ -476,6 +544,31 @@
 
   .cookbookContent {
     padding: 0.8rem;
+  }
+
+  /* Cookbook header stacks on small screens */
+  .cookbookHeader {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .searchInput {
+    width: 100%;
+    min-width: unset;
+  }
+}
+
+@media (max-width: 375px) {
+  .logo {
+    font-size: 2rem;
+  }
+
+  .userName {
+    display: none; /* hide name on very small screens, keep avatar */
+  }
+
+  .cookbookGrid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -508,15 +601,16 @@
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: #fff;
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-left: 0.5rem;
+  margin-left: 0.25rem;
   cursor: pointer;
   transition: all 0.2s;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .iconButton:hover {

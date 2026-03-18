@@ -31,22 +31,13 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Social Recipe Extractor")
 
 # Configure CORS - allow all Vercel preview URLs
-origins = [
-    "http://localhost:3000",
-    "https://social-recipe-app.vercel.app",
-    "https://social-recipe-app-pietoffs-projects.vercel.app",
-    "https://social-recipe-app-git-main-pietoffs-projects.vercel.app",
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origin_regex=r"https://.*\.vercel\.app|http://localhost(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-logger.info(f"CORS configured for origins: {origins}")
 
 # --- Models ---
 
@@ -109,10 +100,19 @@ def get_video_data(url: str, extract_audio: bool = False):
         'no_warnings': True,
         'writesubtitles': True,
         'writeautomaticsub': True,
-        'subtitleslangs': ['en', 'nl', 'auto'],
-        # ANTI-BOT MEASURES:
-        'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'subtitleslangs': ['en', 'nl', 'en-US', 'en-GB', 'auto'],
+        'ignoreerrors': False,
+        # Anti-bot: rotate user-agents, prefer mobile clients for TikTok/Instagram
+        'extractor_args': {
+            'youtube': {'player_client': ['android', 'ios', 'web']},
+            'tiktok': {'webpage_download': True},
+        },
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+        'socket_timeout': 30,
     }
     
     # 2. Add audio extraction options if requested
@@ -286,36 +286,33 @@ def parse_with_llm(text_data: str, api_key: str):
         client = Groq(api_key=api_key)
         
         prompt = f"""
-        You are an expert chef and data parser. I will give you text (and possibly audio transcript) extracted from a social media cooking video (TikTok/Instagram/YouTube). 
-        Your goal is to extract a structured recipe from it.
-        
-        CRITICAL RULES:
-        1. Convert WEIGHT/VOLUME to METRIC (ml, l, g, kg). Do NOT use cups, oz, lbs.
-           HOWEVER: Keep natural counts for discrete items (e.g. "3 cloves garlic", "2 onions", "1 pinch"). Do NOT convert these to grams (e.g. NEVER say "3g garlic").
-        2. Analyze the recipe and assign multiple TAGS from these lists:
-           - MEAL TYPES: "Breakfast", "Brunch", "Lunch", "Dinner", "Snack", "Dessert", "Appetizer", "Drink".
-           - DISH TYPES: "Airfryer", "BBQ", "Slow Cooker", "Pasta", "Pizza", "Burger", "Sandwich", "Wrap", "Tacos", "Salad", "Bowl", "Soup", "Stew", "Curry", "Rice", "Meat", "Fish", "Chicken", "Vegetarian", "Vegan", "Low-Carb", "High-Protein", "Smoothie", "Cocktail", "Sauce", "Side".
-           - Add other relevant tags (e.g. "Healthy", "Quick", "Traditional") if appropriate.
-        3. If ingredient AMOUNTS are missing in the text, USE YOUR CULINARY KNOWLEDGE to estimate reasonable metric amounts (e.g. "200g" for pasta for 2 people). NEVER return empty strings for amount/unit if you can infer them.
-        4. Group ingredients by component if applicable (e.g., "Sauce", "Dressing", "Main"). If no distinct groups, use "Main".
-        5. INSTRUCTIONS: Be detailed and descriptive. Do not summarize. Capture all small steps mentioned, even implied ones. We want a full cooking guide.
-        
-        Return ONLY valid JSON matching this schema:
+        You are an expert chef and data parser. Extract a structured recipe from the text below, which comes from a social media cooking video (TikTok/Instagram/YouTube). The text may include video titles, descriptions, captions, subtitles, and/or an audio transcript.
+
+        RULES:
+        1. METRIC units only for weight/volume (ml, l, g, kg). Keep natural counts for discrete items ("3 cloves garlic", "2 eggs"). Never convert countable items to grams.
+        2. If amounts are missing, use your culinary knowledge to estimate sensible metric amounts. Never leave amount blank if you can infer it.
+        3. Group ingredients by component when relevant (e.g. "Sauce", "Marinade", "Batter"). Default group is "Main".
+        4. Instructions: be detailed and sequential. Expand on implied steps. Aim for a complete cooking guide a beginner could follow.
+        5. Tags: assign ALL that apply from:
+           - Meal: "Breakfast" "Brunch" "Lunch" "Dinner" "Snack" "Dessert" "Appetizer" "Drink"
+           - Dish: "Airfryer" "BBQ" "Slow Cooker" "Pasta" "Pizza" "Burger" "Sandwich" "Wrap" "Tacos" "Salad" "Bowl" "Soup" "Stew" "Curry" "Rice" "Meat" "Fish" "Chicken" "Vegetarian" "Vegan" "Low-Carb" "High-Protein" "Smoothie" "Cocktail" "Sauce" "Side"
+           - Extra: "Healthy" "Quick" "Spicy" "Traditional" "One-Pan" etc. if clearly applicable
+        6. ALWAYS output everything in English, regardless of input language.
+        7. If the text contains no recipe at all, still return the JSON schema with empty arrays and explain in description.
+
+        Return ONLY a valid JSON object — no markdown, no explanation:
         {{
             "title": "string",
-            "description": "string",
-            "ingredients": [{{"item": "string", "amount": "string", "unit": "string (metric)", "group": "string"}}],
-            "instructions": ["string (detailed step 1)", "string (detailed step 2)"],
-            "prep_time": "string (e.g. 15 mins)",
-            "cook_time": "string (e.g. 1 hour)",
-            "servings": "string (e.g. 4 people)",
-            "tags": ["string", "string"],
+            "description": "string (2-3 sentences, appetising summary)",
+            "ingredients": [{{"item": "string", "amount": "string", "unit": "string", "group": "string"}}],
+            "instructions": ["string", "string"],
+            "prep_time": "string (e.g. 10 mins)",
+            "cook_time": "string (e.g. 25 mins)",
+            "servings": "string (e.g. 2 people)",
+            "tags": ["string"],
             "image_url": null
         }}
 
-        If the text contains no recipe, return empty strings in JSON but explain in description.
-        ALWAYS translate the entire recipe (title, ingredients, instructions) into English, regardless of the input language.
-        
         Raw Text:
         {text_data}
         """
@@ -455,80 +452,81 @@ def analyze_visuals_with_groq(frames: List[str], api_key: str) -> str:
 
 # --- Endpoints ---
 
+def is_thin_content(raw_text: str) -> bool:
+    """Returns True if the extracted text is too sparse to reliably parse a recipe from."""
+    return (
+        len(raw_text) < 200 or
+        "No description" in raw_text or
+        raw_text.strip().startswith("Title: TikTok") or
+        raw_text.strip().startswith("Title: Instagram") or
+        "Make Your Day" in raw_text
+    )
+
+
 @app.post("/extract-recipe")
 def extract_recipe(request: ExtractRequest):
-    # Support multiple env var names/locations
     api_key = request.api_key or request.gemini_api_key or os.getenv("GROQ_API_KEY")
-    
     if not api_key:
         raise HTTPException(status_code=401, detail="API Key is required (GROQ_API_KEY)")
 
-    # 1. Extract raw data
-    raw_text, thumbnail_url, audio_path = get_video_data(request.url, extract_audio=True)
-    
-    # 2. Transcribe Audio (if found via yt-dlp)
-    if audio_path:
-        logger.info(f"Transcribing audio from {audio_path}...")
-        transcript = transcribe_audio(audio_path, api_key)
-        if transcript:
-            raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{transcript}"
-            
-    # 3. Vision Fallback: If text is short, try to download and SEE the video
-    # Check if raw_text is just "Unknown Recipe\nNo description available" or a generic platform title
-    is_thin_content = (
-        len(raw_text) < 150 or 
-        "No description" in raw_text or
-        "TikTok" in raw_text[:30] or
-        "Instagram" in raw_text[:30] or
-        "Make Your Day" in raw_text
-    )
-    if is_thin_content:
-        logger.info("Description thin. Attempting Vision Analysis...")
-        # We need the HTML to find direct URL manually if yt-dlp failed to give us a file
-        # But get_video_data consumes the attempts.
-        # Let's try to find a direct video URL using our new helper if we don't have enough data
-        # Note: We don't have the HTML here easily unless we refactor get_video_data to return it or we fetch again.
-        # Fetching HTML again is cheap.
-        try:
-             import requests
-             headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1"}
-             html_resp = requests.get(request.url, headers=headers, timeout=10)
-             if html_resp.status_code == 200:
-                 direct_url = extract_direct_video_url(request.url, html_resp.text)
-                 if direct_url:
-                     logger.info(f"Found direct video URL: {direct_url[:50]}...")
-                     # Download temp
-                     temp_vid_path = f"{tempfile.gettempdir()}/temp_vision_vid.mp4"
-                     vid_resp = requests.get(direct_url, stream=True)
-                     with open(temp_vid_path, 'wb') as f:
-                         for chunk in vid_resp.iter_content(chunk_size=8192):
-                             f.write(chunk)
-                     
-                     # Extract Audio for Whisper (if yt-dlp failed to get it)
-                     if not audio_path:
-                         # Use ffmpeg to extract audio from this temp file
-                         import subprocess
-                         temp_audio_path = f"{tempfile.gettempdir()}/temp_vision_audio.mp3"
-                         subprocess.run(["ffmpeg", "-i", temp_vid_path, "-vn", "-acodec", "libmp3lame", "-y", temp_audio_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                         transcript = transcribe_audio(temp_audio_path, api_key)
-                         if transcript:
-                             raw_text += f"\n\n[AUDIO TRANSCRIPT FROM DIRECT DL]:\n{transcript}"
+    # --- STEP 1: Fast pass — metadata + subtitles only (no audio download) ---
+    logger.info(f"Step 1: Fast metadata extraction for {request.url}")
+    raw_text, thumbnail_url, _ = get_video_data(request.url, extract_audio=False)
 
-                     # Extract Frames for Vision
-                     frames = extract_frames(temp_vid_path)
-                     visual_desc = analyze_visuals_with_groq(frames, api_key)
-                     if visual_desc:
-                         raw_text += visual_desc
-                         
+    # --- STEP 2: If content is rich enough, go straight to LLM ---
+    if not is_thin_content(raw_text):
+        logger.info(f"Content is rich ({len(raw_text)} chars), skipping audio download")
+        recipe_data = parse_with_llm(raw_text, api_key)
+        recipe_data['image_url'] = thumbnail_url
+        return recipe_data
+
+    # --- STEP 3: Thin content — try audio download + Whisper transcription ---
+    logger.info("Content thin, attempting audio download + transcription...")
+    try:
+        _, _, audio_path = get_video_data(request.url, extract_audio=True)
+        if audio_path:
+            transcript = transcribe_audio(audio_path, api_key)
+            if transcript:
+                raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{transcript}"
+    except Exception as e:
+        logger.warning(f"Audio extraction failed: {e}")
+
+    # --- STEP 4: Still thin — try direct video download + vision + audio ---
+    if is_thin_content(raw_text):
+        logger.info("Still thin after audio attempt, trying vision fallback...")
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1"}
+            html_resp = requests.get(request.url, headers=headers, timeout=10)
+            if html_resp.status_code == 200:
+                direct_url = extract_direct_video_url(request.url, html_resp.text)
+                if direct_url:
+                    temp_vid_path = f"{tempfile.gettempdir()}/temp_vision_vid.mp4"
+                    vid_resp = requests.get(direct_url, stream=True, timeout=30)
+                    with open(temp_vid_path, 'wb') as f:
+                        for chunk in vid_resp.iter_content(chunk_size=8192):
+                            f.write(chunk)
+
+                    # Audio via ffmpeg
+                    temp_audio_path = f"{tempfile.gettempdir()}/temp_vision_audio.mp3"
+                    subprocess.run(
+                        ["ffmpeg", "-i", temp_vid_path, "-vn", "-acodec", "libmp3lame", "-y", temp_audio_path],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                    transcript = transcribe_audio(temp_audio_path, api_key)
+                    if transcript:
+                        raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{transcript}"
+
+                    # Vision frames
+                    frames = extract_frames(temp_vid_path)
+                    visual_desc = analyze_visuals_with_groq(frames, api_key)
+                    if visual_desc:
+                        raw_text += visual_desc
         except Exception as e_vision:
             logger.warning(f"Vision fallback failed: {e_vision}")
 
-    # 4. Parse with LLM (Llama 3)
+    # --- STEP 5: Parse whatever we have with LLM ---
     recipe_data = parse_with_llm(raw_text, api_key)
-    
-    # 5. Inject thumb
     recipe_data['image_url'] = thumbnail_url
-    
     return recipe_data
 
 @app.get("/")
