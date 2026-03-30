@@ -276,7 +276,20 @@ function HomeContent() {
           await saveRecipeDirect(r);
           importedTitles.add(r.title);
         }
-      } catch (err) {
+      } catch (err: any) {
+        const msg: string = err?.message || '';
+        if (msg.includes('rate_limit_exceeded') || msg.includes('Rate limit')) {
+          // Extract retry time if present, e.g. "Please try again in 5m54s"
+          const retryMatch = msg.match(/try again in ([^.]+)/i);
+          const retryHint = retryMatch ? ` Try again in ${retryMatch[1].trim()}.` : '';
+          setImportProgress(null);
+          setCollectionVideos(null);
+          setCollectionTitle(null);
+          setSelectedVideoIds(new Set());
+          setError(`Daily AI token limit reached — imported ${importedTitles.size} of ${toImport.length} recipes.${retryHint}`);
+          setView('cookbook');
+          return;
+        }
         console.warn(`Skipped video ${i + 1}:`, err);
       }
       if (i < toImport.length - 1) await new Promise(res => setTimeout(res, 500));
