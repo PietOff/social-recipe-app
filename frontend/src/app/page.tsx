@@ -239,8 +239,11 @@ function HomeContent() {
       try {
         const r = await extractSingleRecipe(collectionVideos[i].url);
         if (r) {
-          await saveRecipe(r);
-          imported++;
+          const alreadySaved = savedRecipes.some(s => s.title === r.title);
+          if (!alreadySaved) {
+            await saveRecipe(r);
+            imported++;
+          }
         }
       } catch (err) {
         // Skip failed videos, continue with the rest
