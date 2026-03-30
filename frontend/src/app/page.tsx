@@ -26,8 +26,11 @@ function HomeContent() {
   const [savedRecipes, setSavedRecipes] = useState<Recipe[]>([]);
 
   // Collection import state
-  const [collectionVideos, setCollectionVideos] = useState<{ url: string; title?: string; thumbnail?: string }[] | null>(null);
+  type CollectionVideo = { url: string; title?: string; thumbnail?: string; video_id?: string };
+  const [collectionVideos, setCollectionVideos] = useState<CollectionVideo[] | null>(null);
   const [collectionTitle, setCollectionTitle] = useState<string | null>(null);
+  const [classifying, setClassifying] = useState(false);
+  const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(new Set());
   const [importProgress, setImportProgress] = useState<{ current: number; total: number } | null>(null);
   const [importCancelled, setImportCancelled] = useState(false);
   const [cookbookLoading, setCookbookLoading] = useState(false);
@@ -255,19 +258,20 @@ function HomeContent() {
 
   const handleImportCollection = async () => {
     if (!collectionVideos) return;
-    setImportCancelled(false);
-    setImportProgress({ current: 0, total: collectionVideos.length });
+    const toImport = collectionVideos.filter(v => selectedVideoIds.has(v.video_id ?? v.url));
+    if (toImport.length === 0) return;
 
-    // Snapshot titles already in cookbook at import start to detect pre-existing duplicates
+    setImportCancelled(false);
+    setImportProgress({ current: 0, total: toImport.length });
+
     const existingTitles = new Set(savedRecipes.map(r => r.title));
-    // Track titles added during this import run to catch in-run duplicates
     const importedTitles = new Set<string>();
 
-    for (let i = 0; i < collectionVideos.length; i++) {
+    for (let i = 0; i < toImport.length; i++) {
       if (importCancelled) break;
-      setImportProgress({ current: i + 1, total: collectionVideos.length });
+      setImportProgress({ current: i + 1, total: toImport.length });
       try {
-        const r = await extractSingleRecipe(collectionVideos[i].url);
+        const r = await extractSingleRecipe(toImport[i].url);
         if (r && !existingTitles.has(r.title) && !importedTitles.has(r.title)) {
           await saveRecipeDirect(r);
           importedTitles.add(r.title);
@@ -275,12 +279,13 @@ function HomeContent() {
       } catch (err) {
         console.warn(`Skipped video ${i + 1}:`, err);
       }
-      if (i < collectionVideos.length - 1) await new Promise(res => setTimeout(res, 500));
+      if (i < toImport.length - 1) await new Promise(res => setTimeout(res, 500));
     }
 
     setImportProgress(null);
     setCollectionVideos(null);
     setCollectionTitle(null);
+    setSelectedVideoIds(new Set());
     setView('cookbook');
   };
 
@@ -305,9 +310,36 @@ function HomeContent() {
       if (collectionRes.ok) {
         const collectionData = await collectionRes.json();
         if (collectionData.is_collection && collectionData.count > 0) {
-          setCollectionVideos(collectionData.videos);
+          const videos: CollectionVideo[] = collectionData.videos;
+          setCollectionVideos(videos);
           setCollectionTitle(collectionData.collection_title || 'TikTok Collection');
           setLoading(false);
+
+          // Classify all titles in one batch call
+          setClassifying(true);
+          try {
+            const classifyRes = await fetch(`${API_URL}/classify-recipes`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ videos: videos.map(v => ({ video_id: v.video_id, title: v.title })) }),
+            });
+            if (classifyRes.ok) {
+              const { results } = await classifyRes.json();
+              const recipeIds = new Set<string>(
+                results.filter((r: { video_id: string; is_recipe: boolean }) => r.is_recipe)
+                       .map((r: { video_id: string; is_recipe: boolean }) => r.video_id)
+              );
+              // Default-select only recipe videos; fall back to all if classification returned nothing
+              setSelectedVideoIds(recipeIds.size > 0 ? recipeIds : new Set(videos.map(v => v.video_id ?? v.url)));
+            } else {
+              // Classification failed — select all
+              setSelectedVideoIds(new Set(videos.map(v => v.video_id ?? v.url)));
+            }
+          } catch {
+            setSelectedVideoIds(new Set(videos.map(v => v.video_id ?? v.url)));
+          } finally {
+            setClassifying(false);
+          }
           return;
         }
       }
@@ -520,20 +552,58 @@ function HomeContent() {
 
               {/* Collection detected UI */}
               {collectionVideos && !importProgress && (
-                <div className={styles.recipeCard} style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>📚</div>
-                  <h2 style={{ marginBottom: '0.25rem' }}>{collectionTitle}</h2>
-                  <p style={{ opacity: 0.7, marginBottom: '1.5rem' }}>
-                    Found {collectionVideos.length} videos in this collection. Import them all as recipes?
-                  </p>
-                  <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
-                    <button onClick={handleImportCollection} className={styles.saveButton} style={{ margin: 0 }}>
-                      Import All {collectionVideos.length} Recipes
-                    </button>
-                    <button onClick={() => { setCollectionVideos(null); setCollectionTitle(null); }} className={styles.iconButton} style={{ padding: '0.5rem 1rem', opacity: 0.6 }}>
-                      Cancel
-                    </button>
+                <div className={styles.recipeCard}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                    <h2 style={{ margin: 0 }}>📚 {collectionTitle}</h2>
+                    <button onClick={() => { setCollectionVideos(null); setCollectionTitle(null); setSelectedVideoIds(new Set()); }} className={styles.iconButton} style={{ opacity: 0.6 }}>×</button>
                   </div>
+
+                  {classifying ? (
+                    <p style={{ opacity: 0.6, margin: '1rem 0' }}>Checking which videos are recipes...</p>
+                  ) : (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '0.75rem 0 0.5rem' }}>
+                        <span style={{ opacity: 0.7, fontSize: '0.85rem' }}>
+                          {selectedVideoIds.size} of {collectionVideos.length} selected
+                        </span>
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          <button onClick={() => setSelectedVideoIds(new Set(collectionVideos.map(v => v.video_id ?? v.url)))} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>All</button>
+                          <span style={{ opacity: 0.4 }}>|</span>
+                          <button onClick={() => setSelectedVideoIds(new Set())} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>None</button>
+                        </div>
+                      </div>
+
+                      <div style={{ maxHeight: '280px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.4rem', marginBottom: '1rem' }}>
+                        {collectionVideos.map((v, i) => {
+                          const key = v.video_id ?? v.url;
+                          const checked = selectedVideoIds.has(key);
+                          return (
+                            <label key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.4rem 0.6rem', borderRadius: '8px', background: checked ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)', cursor: 'pointer', opacity: checked ? 1 : 0.45 }}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => {
+                                  setSelectedVideoIds(prev => {
+                                    const next = new Set(prev);
+                                    checked ? next.delete(key) : next.add(key);
+                                    return next;
+                                  });
+                                }}
+                                style={{ accentColor: '#FF6B35', width: '16px', height: '16px', flexShrink: 0 }}
+                              />
+                              <span style={{ fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {v.title || `Video ${i + 1}`}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+
+                      <button onClick={handleImportCollection} className={styles.saveButton} style={{ margin: 0 }} disabled={selectedVideoIds.size === 0}>
+                        Import {selectedVideoIds.size} Recipe{selectedVideoIds.size !== 1 ? 's' : ''}
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
 

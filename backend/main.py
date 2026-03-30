@@ -469,6 +469,58 @@ def is_collection_url(url: str) -> bool:
     return bool(re.search(r'tiktok\.com/@[^/]+/collection/', url))
 
 
+class ClassifyRequest(BaseModel):
+    videos: List[dict]  # [{video_id, title}]
+    api_key: Optional[str] = None
+
+
+@app.post("/classify-recipes")
+def classify_recipes(request: ClassifyRequest):
+    """
+    Takes a list of video titles and classifies each as a recipe/cooking video or not.
+    Uses a single fast LLM call so it's cheap even for large collections.
+    """
+    if not request.videos:
+        return {"results": []}
+
+    api_key = request.api_key or os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API Key required")
+
+    titles_list = "\n".join(
+        f'{i + 1}. [id:{v.get("video_id", i)}] {v.get("title") or "(no title)"}'
+        for i, v in enumerate(request.videos)
+    )
+
+    prompt = f"""Classify each TikTok video title below as a cooking/recipe video or not.
+Recipe = anything involving food preparation, ingredients, cooking techniques, or meals.
+Not a recipe = vlogs, challenges, reactions, day-in-my-life, hauls, travel, dance, etc.
+If the title is missing or ambiguous, default to true.
+
+Titles:
+{titles_list}
+
+Return ONLY this JSON object (one entry per video, same order):
+{{"results": [{{"video_id": "string", "is_recipe": true}}]}}"""
+
+    try:
+        client = Groq(api_key=api_key)
+        completion = client.chat.completions.create(
+            model="llama-3.1-8b-instant",  # Fast cheap model — just classification
+            messages=[
+                {"role": "system", "content": "You are a JSON-only API. Return only valid JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        return json.loads(completion.choices[0].message.content)
+    except Exception as e:
+        logger.warning(f"Classification failed: {e} — defaulting all to is_recipe=true")
+        # Fail gracefully: mark everything as a recipe so nothing gets silently dropped
+        return {"results": [{"video_id": v.get("video_id", str(i)), "is_recipe": True} for i, v in enumerate(request.videos)]}
+
+
 @app.post("/extract-collection")
 def extract_collection(request: ExtractRequest):
     """
