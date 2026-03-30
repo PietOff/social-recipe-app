@@ -464,6 +464,72 @@ def is_thin_content(raw_text: str) -> bool:
     )
 
 
+def is_collection_url(url: str) -> bool:
+    """Detects if a URL points to a TikTok collection/playlist."""
+    return bool(re.search(r'tiktok\.com/@[^/]+/collection/', url))
+
+
+@app.post("/extract-collection")
+def extract_collection(request: ExtractRequest):
+    """
+    Extracts all video URLs from a TikTok collection URL.
+    Returns list of individual video URLs to be processed one by one.
+    """
+    resolved_url = resolve_redirects(request.url)
+    logger.info(f"Extracting collection from: {resolved_url}")
+
+    ydl_opts = {
+        'extract_flat': True,
+        'quiet': True,
+        'no_warnings': True,
+        'ignoreerrors': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
+        'extractor_args': {
+            'tiktok': {'webpage_download': True},
+        },
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(resolved_url, download=False)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read collection: {str(e)}")
+
+    if not info:
+        raise HTTPException(status_code=400, detail="No data returned for this URL")
+
+    entries = info.get('entries', [])
+    if not entries:
+        raise HTTPException(status_code=400, detail="No videos found in this collection. Make sure the collection is public.")
+
+    videos = []
+    for entry in entries:
+        if not entry:
+            continue
+        video_id = entry.get('id', '')
+        # Build canonical TikTok URL from the entry
+        webpage_url = entry.get('webpage_url') or entry.get('url', '')
+        if not webpage_url.startswith('http') and video_id:
+            uploader = entry.get('uploader_id') or entry.get('uploader', 'unknown')
+            webpage_url = f"https://www.tiktok.com/@{uploader}/video/{video_id}"
+        videos.append({
+            'url': webpage_url,
+            'title': entry.get('title'),
+            'thumbnail': entry.get('thumbnail'),
+            'video_id': video_id,
+        })
+
+    return {
+        'is_collection': True,
+        'count': len(videos),
+        'collection_title': info.get('title'),
+        'videos': videos,
+    }
+
+
 @app.post("/extract-recipe")
 def extract_recipe(request: ExtractRequest):
     api_key = request.api_key or request.gemini_api_key or os.getenv("GROQ_API_KEY")
