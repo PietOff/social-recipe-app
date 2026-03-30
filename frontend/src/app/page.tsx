@@ -24,6 +24,12 @@ function HomeContent() {
   const [error, setError] = useState<string | null>(null);
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [savedRecipes, setSavedRecipes] = useState<Recipe[]>([]);
+
+  // Collection import state
+  const [collectionVideos, setCollectionVideos] = useState<{ url: string; title?: string; thumbnail?: string }[] | null>(null);
+  const [collectionTitle, setCollectionTitle] = useState<string | null>(null);
+  const [importProgress, setImportProgress] = useState<{ current: number; total: number } | null>(null);
+  const [importCancelled, setImportCancelled] = useState(false);
   const [cookbookLoading, setCookbookLoading] = useState(false);
   const [cookbookError, setCookbookError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -220,6 +226,48 @@ function HomeContent() {
     }
   };
 
+  const extractSingleRecipe = async (videoUrl: string): Promise<Recipe | null> => {
+    const res = await fetch(`${API_URL}/extract-recipe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: videoUrl }),
+    });
+    if (!res.ok) {
+      const errData = await res.json();
+      throw new Error(errData.detail || 'Extraction failed');
+    }
+    return res.json();
+  };
+
+  const handleImportCollection = async () => {
+    if (!collectionVideos) return;
+    setImportCancelled(false);
+    setImportProgress({ current: 0, total: collectionVideos.length });
+    let imported = 0;
+
+    for (let i = 0; i < collectionVideos.length; i++) {
+      if (importCancelled) break;
+      setImportProgress({ current: i + 1, total: collectionVideos.length });
+      try {
+        const r = await extractSingleRecipe(collectionVideos[i].url);
+        if (r) {
+          await saveRecipe(r);
+          imported++;
+        }
+      } catch (err) {
+        // Skip failed videos, continue with the rest
+        console.warn(`Skipped video ${i + 1}:`, err);
+      }
+      // Small delay to avoid hammering the server
+      if (i < collectionVideos.length - 1) await new Promise(res => setTimeout(res, 500));
+    }
+
+    setImportProgress(null);
+    setCollectionVideos(null);
+    setCollectionTitle(null);
+    setView('cookbook');
+  };
+
   const handleExtract = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!url) return;
@@ -227,27 +275,29 @@ function HomeContent() {
     setLoading(true);
     setError(null);
     setRecipe(null);
+    setCollectionVideos(null);
+    setCollectionTitle(null);
 
     try {
-      const backendUrl = `${API_URL}/extract-recipe`;
-
-      const res = await fetch(backendUrl, {
+      // First, try to detect if this is a collection URL
+      const collectionRes = await fetch(`${API_URL}/extract-collection`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          url,
-          api_key: undefined
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
       });
 
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.detail || 'Extraction failed');
+      if (collectionRes.ok) {
+        const collectionData = await collectionRes.json();
+        if (collectionData.is_collection && collectionData.count > 0) {
+          setCollectionVideos(collectionData.videos);
+          setCollectionTitle(collectionData.collection_title || 'TikTok Collection');
+          setLoading(false);
+          return;
+        }
       }
 
-      const data = await res.json();
+      // Not a collection — extract as single recipe
+      const data = await extractSingleRecipe(url);
       setRecipe(data);
     } catch (err: any) {
       setError(err.message);
@@ -451,6 +501,49 @@ function HomeContent() {
               )}
 
               {error && <div className={styles.error}>{error}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>💡 Tip: Try using TikTok or Instagram links instead</small></>}</div>}
+
+              {/* Collection detected UI */}
+              {collectionVideos && !importProgress && (
+                <div className={styles.recipeCard} style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>📚</div>
+                  <h2 style={{ marginBottom: '0.25rem' }}>{collectionTitle}</h2>
+                  <p style={{ opacity: 0.7, marginBottom: '1.5rem' }}>
+                    Found {collectionVideos.length} videos in this collection. Import them all as recipes?
+                  </p>
+                  <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
+                    <button onClick={handleImportCollection} className={styles.saveButton} style={{ margin: 0 }}>
+                      Import All {collectionVideos.length} Recipes
+                    </button>
+                    <button onClick={() => { setCollectionVideos(null); setCollectionTitle(null); }} className={styles.iconButton} style={{ padding: '0.5rem 1rem', opacity: 0.6 }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Collection import progress */}
+              {importProgress && (
+                <div className={styles.recipeCard} style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '2rem', marginBottom: '0.75rem' }}>⏳</div>
+                  <h3 style={{ marginBottom: '0.5rem' }}>
+                    Importing recipes... {importProgress.current}/{importProgress.total}
+                  </h3>
+                  <div style={{ background: 'rgba(255,255,255,0.1)', borderRadius: '8px', overflow: 'hidden', margin: '1rem 0' }}>
+                    <div style={{
+                      height: '8px',
+                      background: 'var(--primary-gradient)',
+                      width: `${(importProgress.current / importProgress.total) * 100}%`,
+                      transition: 'width 0.3s ease',
+                    }} />
+                  </div>
+                  <p style={{ opacity: 0.6, fontSize: '0.85rem', marginBottom: '1rem' }}>
+                    Recipes are being saved to your cookbook automatically.
+                  </p>
+                  <button onClick={() => setImportCancelled(true)} className={styles.iconButton} style={{ opacity: 0.6 }}>
+                    Cancel import
+                  </button>
+                </div>
+              )}
 
               {recipe && (
                 <div className={styles.recipeCard}>
