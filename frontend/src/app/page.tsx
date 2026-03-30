@@ -239,29 +239,54 @@ function HomeContent() {
     return res.json();
   };
 
+  const saveRecipeDirect = async (recipeToSave: Recipe) => {
+    // Non-toggling save used by bulk import — uses functional updater to avoid stale closure
+    setSavedRecipes(prev => {
+      if (prev.some(r => r.title === recipeToSave.title)) return prev;
+      const updated = [recipeToSave, ...prev];
+      if (!user) localStorage.setItem('chefSocial_cookbook', JSON.stringify(updated));
+      return updated;
+    });
+
+    if (user) {
+      try {
+        const res = await fetch(`${API_URL}/recipes`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${user.token}` },
+          body: JSON.stringify(recipeToSave),
+        });
+        if (res.ok) {
+          const saved = await res.json();
+          setSavedRecipes(prev => [saved, ...prev.filter(r => r.title !== recipeToSave.title)]);
+        }
+      } catch (e) {
+        console.warn('Cloud save failed for recipe, kept locally', e);
+      }
+    }
+  };
+
   const handleImportCollection = async () => {
     if (!collectionVideos) return;
     setImportCancelled(false);
     setImportProgress({ current: 0, total: collectionVideos.length });
-    let imported = 0;
+
+    // Snapshot titles already in cookbook at import start to detect pre-existing duplicates
+    const existingTitles = new Set(savedRecipes.map(r => r.title));
+    // Track titles added during this import run to catch in-run duplicates
+    const importedTitles = new Set<string>();
 
     for (let i = 0; i < collectionVideos.length; i++) {
       if (importCancelled) break;
       setImportProgress({ current: i + 1, total: collectionVideos.length });
       try {
         const r = await extractSingleRecipe(collectionVideos[i].url);
-        if (r) {
-          const alreadySaved = savedRecipes.some(s => s.title === r.title);
-          if (!alreadySaved) {
-            await saveRecipe(r);
-            imported++;
-          }
+        if (r && !existingTitles.has(r.title) && !importedTitles.has(r.title)) {
+          await saveRecipeDirect(r);
+          importedTitles.add(r.title);
         }
       } catch (err) {
-        // Skip failed videos, continue with the rest
         console.warn(`Skipped video ${i + 1}:`, err);
       }
-      // Small delay to avoid hammering the server
       if (i < collectionVideos.length - 1) await new Promise(res => setTimeout(res, 500));
     }
 
