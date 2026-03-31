@@ -461,6 +461,30 @@ function HomeContent() {
 
   const [shareLink, setShareLink] = useState<string | null>(null);
   const [shareLoading, setShareLoading] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
+  const shareLinkRef = React.useRef<HTMLInputElement>(null);
+
+  const copyShareLink = (link: string) => {
+    // Try modern clipboard API first
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(link).then(() => {
+        setShareCopied(true);
+        setTimeout(() => setShareCopied(false), 2500);
+      }).catch(() => fallbackCopy());
+    } else {
+      fallbackCopy();
+    }
+  };
+
+  const fallbackCopy = () => {
+    const input = shareLinkRef.current;
+    if (!input) return;
+    input.select();
+    input.setSelectionRange(0, 99999);
+    document.execCommand('copy');
+    setShareCopied(true);
+    setTimeout(() => setShareCopied(false), 2500);
+  };
 
   const handleShare = async (recipesToShare: Recipe[]) => {
     if (!user) { setError('Sign in to share recipes.'); return; }
@@ -475,7 +499,8 @@ function HomeContent() {
       const { token: shareToken } = await res.json();
       const link = `${window.location.origin}/share/${shareToken}`;
       setShareLink(link);
-      await navigator.clipboard.writeText(link).catch(() => {});
+      // Copy after state update so the input is in the DOM
+      setTimeout(() => copyShareLink(link), 50);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -675,9 +700,11 @@ function HomeContent() {
 
               {shareLink && (
                 <div className={styles.shareToast}>
-                  <span>🔗 Link copied!</span>
-                  <input readOnly value={shareLink} onClick={e => (e.target as HTMLInputElement).select()} className={styles.shareLinkInput} />
-                  <button onClick={() => setShareLink(null)} className={styles.iconButton} style={{ opacity: 0.5, padding: '0 0.25rem' }}>×</button>
+                  <input ref={shareLinkRef} readOnly value={shareLink} onClick={e => (e.target as HTMLInputElement).select()} className={styles.shareLinkInput} />
+                  <button onClick={() => copyShareLink(shareLink)} className={styles.button} style={{ whiteSpace: 'nowrap', padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}>
+                    {shareCopied ? 'Copied!' : 'Copy'}
+                  </button>
+                  <button onClick={() => { setShareLink(null); setShareCopied(false); }} className={styles.iconButton} style={{ opacity: 0.5, padding: '0 0.25rem' }}>×</button>
                 </div>
               )}
 
