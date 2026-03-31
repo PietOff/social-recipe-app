@@ -33,6 +33,7 @@ function HomeContent() {
   const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(new Set());
   const [importProgress, setImportProgress] = useState<{ current: number; total: number } | null>(null);
   const [importCancelled, setImportCancelled] = useState(false);
+  const [importedVideoIds, setImportedVideoIds] = useState<Set<string>>(new Set());
   const [cookbookLoading, setCookbookLoading] = useState(false);
   const [cookbookError, setCookbookError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -44,6 +45,12 @@ function HomeContent() {
 
   // Load saved recipes and user on mount
   React.useEffect(() => {
+    // 0. Load previously imported TikTok video IDs to avoid redundant Groq calls
+    const storedIds = localStorage.getItem('chefSocial_imported_video_ids');
+    if (storedIds) {
+      try { setImportedVideoIds(new Set(JSON.parse(storedIds))); } catch { /* ignore */ }
+    }
+
     // 1. Immediately hydrate from cache (for instant visibility)
     const cachedCookbook = localStorage.getItem('chefSocial_cached_cookbook');
     if (cachedCookbook) {
@@ -278,22 +285,35 @@ function HomeContent() {
 
     const existingTitles = new Set(savedRecipes.map(r => r.title));
     const importedTitles = new Set<string>();
+    const newlyImportedVideoIds: string[] = [];
 
     for (let i = 0; i < toImport.length; i++) {
       if (importCancelled) break;
       setImportProgress({ current: i + 1, total: toImport.length });
+
+      const videoId = toImport[i].video_id ?? toImport[i].url;
+
+      // Skip entirely if we've already imported this video — no Groq call
+      if (importedVideoIds.has(videoId)) continue;
+
       try {
         const r = await extractSingleRecipe(toImport[i].url);
         if (r && !existingTitles.has(r.title) && !importedTitles.has(r.title)) {
           await saveRecipeDirect(r);
           importedTitles.add(r.title);
+          newlyImportedVideoIds.push(videoId);
         }
       } catch (err: any) {
         const msg: string = err?.message || '';
         if (msg.includes('rate_limit_exceeded') || msg.includes('Rate limit')) {
-          // Extract retry time if present, e.g. "Please try again in 5m54s"
           const retryMatch = msg.match(/try again in ([^.]+)/i);
           const retryHint = retryMatch ? ` Try again in ${retryMatch[1].trim()}.` : '';
+          // Persist whatever we managed to import before hitting the limit
+          if (newlyImportedVideoIds.length > 0) {
+            const updated = new Set([...importedVideoIds, ...newlyImportedVideoIds]);
+            setImportedVideoIds(updated);
+            localStorage.setItem('chefSocial_imported_video_ids', JSON.stringify([...updated]));
+          }
           setImportProgress(null);
           setCollectionVideos(null);
           setCollectionTitle(null);
@@ -305,6 +325,13 @@ function HomeContent() {
         console.warn(`Skipped video ${i + 1}:`, err);
       }
       if (i < toImport.length - 1) await new Promise(res => setTimeout(res, 500));
+    }
+
+    // Persist all newly imported video IDs so future imports skip them
+    if (newlyImportedVideoIds.length > 0) {
+      const updated = new Set([...importedVideoIds, ...newlyImportedVideoIds]);
+      setImportedVideoIds(updated);
+      localStorage.setItem('chefSocial_imported_video_ids', JSON.stringify([...updated]));
     }
 
     setImportProgress(null);
@@ -592,7 +619,7 @@ function HomeContent() {
                           {selectedVideoIds.size} of {collectionVideos.length} selected
                         </span>
                         <div style={{ display: 'flex', gap: '0.5rem' }}>
-                          <button onClick={() => setSelectedVideoIds(new Set(collectionVideos.map(v => v.video_id ?? v.url)))} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>All</button>
+                          <button onClick={() => setSelectedVideoIds(new Set(collectionVideos.filter(v => !importedVideoIds.has(v.video_id ?? v.url)).map(v => v.video_id ?? v.url)))} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>All</button>
                           <span style={{ opacity: 0.4 }}>|</span>
                           <button onClick={() => setSelectedVideoIds(new Set())} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>None</button>
                         </div>
@@ -601,13 +628,16 @@ function HomeContent() {
                       <div style={{ maxHeight: '280px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.4rem', marginBottom: '1rem' }}>
                         {collectionVideos.map((v, i) => {
                           const key = v.video_id ?? v.url;
+                          const alreadyImported = importedVideoIds.has(key);
                           const checked = selectedVideoIds.has(key);
                           return (
-                            <label key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.4rem 0.6rem', borderRadius: '8px', background: checked ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)', cursor: 'pointer', opacity: checked ? 1 : 0.45 }}>
+                            <label key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.4rem 0.6rem', borderRadius: '8px', background: checked ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)', cursor: alreadyImported ? 'default' : 'pointer', opacity: alreadyImported ? 0.35 : checked ? 1 : 0.5 }}>
                               <input
                                 type="checkbox"
                                 checked={checked}
+                                disabled={alreadyImported}
                                 onChange={() => {
+                                  if (alreadyImported) return;
                                   setSelectedVideoIds(prev => {
                                     const next = new Set(prev);
                                     checked ? next.delete(key) : next.add(key);
@@ -616,9 +646,12 @@ function HomeContent() {
                                 }}
                                 style={{ accentColor: '#FF6B35', width: '16px', height: '16px', flexShrink: 0 }}
                               />
-                              <span style={{ fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              <span style={{ fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
                                 {v.title || `Video ${i + 1}`}
                               </span>
+                              {alreadyImported && (
+                                <span style={{ fontSize: '0.75rem', opacity: 0.6, flexShrink: 0 }}>already saved</span>
+                              )}
                             </label>
                           );
                         })}
