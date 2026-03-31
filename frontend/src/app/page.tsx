@@ -871,6 +871,19 @@ function HomeContent() {
                   >
                     {selectMode ? 'Cancel' : 'Select'}
                   </button>
+                  {selectMode && (
+                    <button
+                      onClick={() => {
+                        const allIds = new Set(filteredRecipes.map(r => r.id || r.title));
+                        const allSelected = filteredRecipes.every(r => bulkSelected.has(r.id || r.title));
+                        setBulkSelected(allSelected ? new Set() : allIds);
+                      }}
+                      className={styles.button}
+                      style={{ whiteSpace: 'nowrap', padding: '0.5rem 0.9rem', fontSize: '0.85rem', background: 'rgba(255,255,255,0.1)' }}
+                    >
+                      {filteredRecipes.every(r => bulkSelected.has(r.id || r.title)) ? 'Deselect All' : 'Select All'}
+                    </button>
+                  )}
                 </div>
               </div>
 
