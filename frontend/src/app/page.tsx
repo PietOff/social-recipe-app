@@ -471,8 +471,34 @@ function HomeContent() {
     window.print();
   };
 
+  const [shareLink, setShareLink] = useState<string | null>(null);
+  const [shareLoading, setShareLoading] = useState(false);
+
+  const handleShare = async (recipesToShare: Recipe[]) => {
+    if (!user) { setError('Sign in to share recipes.'); return; }
+    setShareLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/share`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${user.token}` },
+        body: JSON.stringify({ recipes: recipesToShare }),
+      });
+      if (!res.ok) throw new Error('Failed to create share link');
+      const { token: shareToken } = await res.json();
+      const link = `${window.location.origin}/share/${shareToken}`;
+      setShareLink(link);
+      await navigator.clipboard.writeText(link).catch(() => {});
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setShareLoading(false);
+    }
+  };
+
   // --- VIEW STATE ---
   const [view, setView] = useState<'home' | 'cookbook' | 'details'>('home');
+  const [selectMode, setSelectMode] = useState(false);
+  const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
 
   // --- FILTERING & BILINGUAL SEARCH ---
   const [selectedCategory, setSelectedCategory] = useState("All");
@@ -659,6 +685,14 @@ function HomeContent() {
 
               {error && <div className={styles.error}>{error}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>💡 Tip: Try using TikTok or Instagram links instead</small></>}</div>}
 
+              {shareLink && (
+                <div className={styles.shareToast}>
+                  <span>🔗 Link copied!</span>
+                  <input readOnly value={shareLink} onClick={e => (e.target as HTMLInputElement).select()} className={styles.shareLinkInput} />
+                  <button onClick={() => setShareLink(null)} className={styles.iconButton} style={{ opacity: 0.5, padding: '0 0.25rem' }}>×</button>
+                </div>
+              )}
+
               {/* Collection detected UI */}
               {collectionVideos && !importProgress && (
                 <div className={styles.recipeCard}>
@@ -752,6 +786,7 @@ function HomeContent() {
                     <h2 className={styles.recipeTitle}>{recipe.title}</h2>
                     <div style={{ display: 'flex', gap: '0.5rem' }}>
                       <button onClick={handlePrint} className={styles.iconButton} title="Save as PDF">🖨️</button>
+                      <button onClick={() => recipe && handleShare([recipe])} disabled={shareLoading} className={styles.iconButton} title="Share recipe">🔗</button>
                       <button onClick={handleDelete} className={styles.iconButton} title="Delete Recipe" style={{ color: '#ff6b6b' }}>🗑️</button>
                       <button onClick={() => { setRecipe(null); if (view === 'details') { setView('cookbook'); setTimeout(() => window.scrollTo({ top: cookbookScrollY.current, behavior: 'smooth' }), 50); } }} className={styles.iconButton} style={{ opacity: 0.6 }}>×</button>
                     </div>
@@ -821,13 +856,22 @@ function HomeContent() {
             <div className={styles.cookbookSection}>
               <div className={styles.cookbookHeader}>
                 <h2>My Cookbook ({savedRecipes.length})</h2>
-                <input
-                  type="text"
-                  placeholder="Search (try 'Kip' or 'Chicken')..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className={styles.searchInput}
-                />
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <input
+                    type="text"
+                    placeholder="Search (try 'Kip' or 'Chicken')..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className={styles.searchInput}
+                  />
+                  <button
+                    onClick={() => { setSelectMode(p => !p); setBulkSelected(new Set()); }}
+                    className={styles.button}
+                    style={{ whiteSpace: 'nowrap', padding: '0.5rem 0.9rem', fontSize: '0.85rem', background: selectMode ? 'var(--primary-gradient)' : 'rgba(255,255,255,0.1)' }}
+                  >
+                    {selectMode ? 'Cancel' : 'Select'}
+                  </button>
+                </div>
               </div>
 
               {/* Filter Chips */}
@@ -869,35 +913,54 @@ function HomeContent() {
                   <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>
                     Loading your recipes...
                   </p>
-                ) : filteredRecipes.map((r, idx) => (
-                  <div key={idx} className={styles.cookbookItem} onClick={() => { cookbookScrollY.current = window.scrollY; setRecipe(r); setView('details'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
-                    <div className={styles.cookbookImage}>
-                      {(r.image_url || r.image) ? (
-                        <img
-                          src={r.image_url || r.image}
-                          alt={r.title}
-                          referrerPolicy="no-referrer"
-                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                          onError={(e) => {
-                            // Hide broken image and show emoji fallback
-                            e.currentTarget.style.display = 'none';
-                            const siblingSpan = e.currentTarget.nextElementSibling as HTMLElement;
-                            if (siblingSpan) siblingSpan.style.display = 'block';
-                          }}
-                        />
-                      ) : null}
-                      <span style={{ fontSize: '2rem', display: (r.image_url || r.image) ? 'none' : 'block' }}>🍳</span>
-                    </div>
-                    <div className={styles.cookbookContent}>
-                      <h4>{r.title}</h4>
-                      <div className={styles.tagsRow}>
-                        {(r.tags || (r.category ? categoryToTags(r.category) : [])).slice(0, 3).map(t => (
-                          <span key={t}>{t}</span>
-                        ))}
+                ) : filteredRecipes.map((r, idx) => {
+                  const recipeKey = r.id || r.title;
+                  const isSelected = bulkSelected.has(recipeKey);
+                  return (
+                    <div
+                      key={idx}
+                      className={styles.cookbookItem}
+                      style={{ outline: isSelected ? '2px solid #FF6B35' : undefined, position: 'relative' }}
+                      onClick={() => {
+                        if (selectMode) {
+                          setBulkSelected(prev => { const n = new Set(prev); isSelected ? n.delete(recipeKey) : n.add(recipeKey); return n; });
+                        } else {
+                          cookbookScrollY.current = window.scrollY; setRecipe(r); setView('details'); window.scrollTo({ top: 0, behavior: 'smooth' });
+                        }
+                      }}
+                    >
+                      {selectMode && (
+                        <div style={{ position: 'absolute', top: 8, right: 8, zIndex: 2, width: 22, height: 22, borderRadius: '50%', background: isSelected ? '#FF6B35' : 'rgba(0,0,0,0.5)', border: '2px solid #FF6B35', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', color: '#fff' }}>
+                          {isSelected ? '✓' : ''}
+                        </div>
+                      )}
+                      <div className={styles.cookbookImage}>
+                        {(r.image_url || r.image) ? (
+                          <img
+                            src={r.image_url || r.image}
+                            alt={r.title}
+                            referrerPolicy="no-referrer"
+                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                              const siblingSpan = e.currentTarget.nextElementSibling as HTMLElement;
+                              if (siblingSpan) siblingSpan.style.display = 'block';
+                            }}
+                          />
+                        ) : null}
+                        <span style={{ fontSize: '2rem', display: (r.image_url || r.image) ? 'none' : 'block' }}>🍳</span>
+                      </div>
+                      <div className={styles.cookbookContent}>
+                        <h4>{r.title}</h4>
+                        <div className={styles.tagsRow}>
+                          {(r.tags || (r.category ? categoryToTags(r.category) : [])).slice(0, 3).map(t => (
+                            <span key={t}>{t}</span>
+                          ))}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {!cookbookLoading && filteredRecipes.length === 0 && savedRecipes.length > 0 && (
                   <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>
                     No recipes match your filter.
@@ -909,6 +972,24 @@ function HomeContent() {
                   </p>
                 )}
               </div>
+
+              {/* Bulk action bar */}
+              {selectMode && bulkSelected.size > 0 && (
+                <div className={styles.bulkBar}>
+                  <span style={{ opacity: 0.8 }}>{bulkSelected.size} selected</span>
+                  <button
+                    onClick={() => {
+                      const recipes = savedRecipes.filter(r => bulkSelected.has(r.id || r.title));
+                      handleShare(recipes).then(() => { setSelectMode(false); setBulkSelected(new Set()); });
+                    }}
+                    className={styles.button}
+                    disabled={shareLoading}
+                    style={{ padding: '0.5rem 1.2rem', fontSize: '0.9rem' }}
+                  >
+                    🔗 {shareLoading ? 'Creating link...' : 'Share selected'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

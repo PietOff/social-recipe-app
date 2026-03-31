@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import typing_extensions
+import secrets
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -892,6 +893,44 @@ def check_db():
     except Exception as e:
         logger.error(f"DB Check Failed: {e}")
         return {"status": "error", "message": str(e)}
+
+class ShareRequest(BaseModel):
+    recipes: List[dict]
+
+
+@app.post("/share")
+async def create_share(request: ShareRequest, user: dict = Depends(verify_jwt)):
+    """Create a public share link for one or more recipes."""
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    if not request.recipes:
+        raise HTTPException(status_code=400, detail="No recipes provided")
+
+    token = secrets.token_hex(8)  # 16-char hex, e.g. "a3f8c12d9e4b7061"
+    supabase.table("shared_links").insert({
+        "token": token,
+        "recipes": request.recipes,
+        "created_by": user["user_id"],
+    }).execute()
+
+    return {"token": token}
+
+
+@app.get("/share/{token}")
+async def get_share(token: str):
+    """Fetch shared recipes by token — no auth required."""
+    supabase = get_supabase_client()
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Database not configured")
+
+    result = supabase.table("shared_links").select("recipes, created_at").eq("token", token).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Share link not found or expired")
+
+    return result.data[0]
+
 
 @app.delete("/recipes/{recipe_id}")
 async def delete_recipe(recipe_id: str, user: dict = Depends(verify_jwt)):
