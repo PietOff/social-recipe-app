@@ -40,6 +40,20 @@ function HomeContent() {
   const [searchQuery, setSearchQuery] = useState('');
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = React.useRef<HTMLDivElement>(null);
+
+  // Close user menu on outside click
+  React.useEffect(() => {
+    if (!userMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setUserMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [userMenuOpen]);
 
   // Helper to migrate legacy single-category recipes
   const categoryToTags = (cat: string) => [cat];
@@ -160,6 +174,7 @@ function HomeContent() {
   };
 
   const handleLogout = () => {
+    setUserMenuOpen(false);
     setUser(null);
     localStorage.removeItem('chefSocial_user');
     setSavedRecipes([]);
@@ -171,6 +186,24 @@ function HomeContent() {
     setCookbookError('Your session has expired. Please sign in again.');
   };
 
+
+  const handleExportCookbook = () => {
+    setUserMenuOpen(false);
+    const data = JSON.stringify(savedRecipes, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `chefsocial-cookbook-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleClearImportCache = () => {
+    setUserMenuOpen(false);
+    setImportedVideoIds(new Set());
+    localStorage.removeItem('chefSocial_imported_video_ids');
+  };
 
   const saveRecipe = async (recipeToSave: Recipe) => {
     const isAlreadySaved = savedRecipes.some(r => r.title === recipeToSave.title);
@@ -518,25 +551,48 @@ function HomeContent() {
             <h1 className={styles.logo}>Chef<span className={styles.highlight}>Social</span></h1>
 
             {/* User Auth Area */}
-            <div className={styles.authArea}>
+            <div className={styles.authArea} ref={userMenuRef}>
               {user ? (
-                <div
-                  className={styles.userChip}
-                  onClick={handleLogout}
-                  title="Click to logout"
-                >
-                  {user.avatar_url && (
-                    <img
-                      src={user.avatar_url}
-                      alt={user.name || 'User'}
-                      referrerPolicy="no-referrer"
-                      className={styles.avatar}
-                    />
+                <>
+                  <div
+                    className={styles.userChip}
+                    onClick={() => setUserMenuOpen(prev => !prev)}
+                  >
+                    {user.avatar_url && (
+                      <img
+                        src={user.avatar_url}
+                        alt={user.name || 'User'}
+                        referrerPolicy="no-referrer"
+                        className={styles.avatar}
+                      />
+                    )}
+                    <span className={styles.userName}>
+                      {user.name?.split(' ')[0] || 'User'}
+                    </span>
+                  </div>
+                  {userMenuOpen && (
+                    <div className={styles.userMenu}>
+                      <div className={styles.userMenuHeader}>
+                        <div style={{ fontWeight: 600 }}>{user.name || 'User'}</div>
+                        <div style={{ fontSize: '0.75rem', opacity: 0.6 }}>{user.email}</div>
+                      </div>
+                      <div className={styles.userMenuDivider} />
+                      <button className={styles.userMenuItem} onClick={() => { setUserMenuOpen(false); setView('cookbook'); }}>
+                        <span>📚</span> My Cookbook ({savedRecipes.length})
+                      </button>
+                      <button className={styles.userMenuItem} onClick={handleExportCookbook}>
+                        <span>📥</span> Export Cookbook
+                      </button>
+                      <button className={styles.userMenuItem} onClick={handleClearImportCache}>
+                        <span>🔄</span> Reset Import Cache
+                      </button>
+                      <div className={styles.userMenuDivider} />
+                      <button className={`${styles.userMenuItem} ${styles.userMenuLogout}`} onClick={handleLogout}>
+                        <span>👋</span> Log Out
+                      </button>
+                    </div>
                   )}
-                  <span className={styles.userName}>
-                    {user.name?.split(' ')[0] || 'User'}
-                  </span>
-                </div>
+                </>
               ) : (
                 <GoogleLogin
                   onSuccess={handleGoogleLogin}
