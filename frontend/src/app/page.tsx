@@ -34,6 +34,7 @@ function HomeContent() {
   const [importProgress, setImportProgress] = useState<{ current: number; total: number } | null>(null);
   const [importCancelled, setImportCancelled] = useState(false);
   const [importedVideoIds, setImportedVideoIds] = useState<Set<string>>(new Set());
+  const cookbookScrollY = React.useRef(0);
   const [cookbookLoading, setCookbookLoading] = useState(false);
   const [cookbookError, setCookbookError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -684,7 +685,7 @@ function HomeContent() {
                     <div style={{ display: 'flex', gap: '0.5rem' }}>
                       <button onClick={handlePrint} className={styles.iconButton} title="Save as PDF">🖨️</button>
                       <button onClick={handleDelete} className={styles.iconButton} title="Delete Recipe" style={{ color: '#ff6b6b' }}>🗑️</button>
-                      <button onClick={() => setRecipe(null)} className={styles.iconButton} style={{ opacity: 0.6 }}>×</button>
+                      <button onClick={() => { setRecipe(null); if (view === 'details') { setView('cookbook'); setTimeout(() => window.scrollTo({ top: cookbookScrollY.current, behavior: 'smooth' }), 50); } }} className={styles.iconButton} style={{ opacity: 0.6 }}>×</button>
                     </div>
                   </div>
                   <p className={styles.recipeDesc}>{recipe.description}</p>
@@ -801,7 +802,7 @@ function HomeContent() {
                     Loading your recipes...
                   </p>
                 ) : filteredRecipes.map((r, idx) => (
-                  <div key={idx} className={styles.cookbookItem} onClick={() => { setRecipe(r); setView('details'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
+                  <div key={idx} className={styles.cookbookItem} onClick={() => { cookbookScrollY.current = window.scrollY; setRecipe(r); setView('details'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
                     <div className={styles.cookbookImage}>
                       {(r.image_url || r.image) ? (
                         <img
