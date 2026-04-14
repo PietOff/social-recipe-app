@@ -112,8 +112,11 @@ function HomeContent() {
         const recipes = await res.json();
         setSavedRecipes(recipes);
         localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(recipes));
-        setCookbookLoading(false);
+      } else if (res.status === 401) {
+        handleAuthError();
         return;
+      } else {
+        setCookbookError('Could not load your recipes from the cloud. Showing cached data.');
       }
       setCookbookError('Could not load recipes from the cloud. Showing cached data.');
     } catch {
@@ -183,6 +186,13 @@ function HomeContent() {
     localStorage.removeItem('chefSocial_user');
     setSavedRecipes([]);
   };
+  const handleAuthError = () => {
+    setUser(null);
+    localStorage.removeItem('chefSocial_user');
+    setSavedRecipes([]);
+    setCookbookError('Your session has expired. Please sign in again.');
+  };
+
 
   const handleExportCookbook = () => {
     setUserMenuOpen(false);
@@ -224,6 +234,7 @@ function HomeContent() {
             }
           });
           if (!res.ok) {
+              if (res.status === 401) { handleAuthError(); return; }
             console.error('Failed to delete from cloud');
             // Revert optimistic update if needed, but for now just log
           }
@@ -252,6 +263,7 @@ function HomeContent() {
             setSavedRecipes(prev => [savedRecipe, ...prev.filter(r => r.title !== recipeToSave.title)]);
             localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify([savedRecipe, ...savedRecipes]));
           } else {
+              if (res.status === 401) { handleAuthError(); return; }
             // Cloud failed — keep the optimistic save in local cache
             localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(optimistic));
           }

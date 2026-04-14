@@ -94,6 +94,28 @@ def get_video_data(url: str, extract_audio: bool = False):
     # 0. Resolve Short URLs (Crucial for TikTok)
     url = resolve_redirects(url)
     logger.info(f"Processing URL: {url}")
+    
+    # TikTok pre-fetch via oEmbed - TikTok 'title' field = full caption (often has full recipe)
+    tiktok_oembed_caption = ""
+    tiktok_oembed_title = ""
+    tiktok_oembed_thumbnail = ""
+    if "tiktok.com" in url:
+        try:
+            oembed_r = requests.get(f"https://www.tiktok.com/oembed?url={url}", headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+            if oembed_r.status_code == 200:
+                od = oembed_r.json()
+                tiktok_oembed_caption = od.get('title', '')
+                tiktok_oembed_title = tiktok_oembed_caption.split('\n')[0][:80]
+                tiktok_oembed_thumbnail = od.get('thumbnail_url', '')
+                if tiktok_oembed_caption:
+                    logger.info(f"TikTok oEmbed: {len(tiktok_oembed_caption)} chars: {tiktok_oembed_caption[:80]}")
+        except Exception as e_oe:
+            logger.warning(f"TikTok oEmbed failed: {e_oe}")
+    
+    # TikTok fast path: caption from oEmbed is usually rich enough for recipe parsing
+    if "tiktok.com" in url and tiktok_oembed_caption and len(tiktok_oembed_caption) > 150 and not extract_audio:
+        logger.info(f"TikTok oEmbed fast path ({len(tiktok_oembed_caption)} chars), skipping yt-dlp")
+        return f"Title: {tiktok_oembed_title}\nDescription: {tiktok_oembed_caption}", tiktok_oembed_thumbnail, None
 
     # 1. Base options for metadata
     ydl_opts = {
@@ -107,7 +129,7 @@ def get_video_data(url: str, extract_audio: bool = False):
         # Anti-bot: rotate user-agents, prefer mobile clients for TikTok/Instagram
         'extractor_args': {
             'youtube': {'player_client': ['android', 'ios', 'web']},
-            'tiktok': {'webpage_download': True},
+            'tiktok': {'api_hostname': 'api22-normal-c-useast2a.tiktokv.com', 'app_version': '20.9.0', 'manifest_app_version': '20.9.0', 'webpage_download': True},
         },
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
@@ -194,6 +216,30 @@ def get_video_data(url: str, extract_audio: bool = False):
                                     thumbnail = item_info['video'].get('cover', thumbnail)
                     except Exception as e_tt:
                         logger.warning(f"TikTok JSON parsing failed: {e_tt}")
+                    # Try __UNIVERSAL_DATA__ and SIGI_STATE (newer TikTok page formats)
+                    try:
+                        universal = re.search(r'window\.__UNIVERSAL_DATA_FOR_REHYDRATION__\s*=\s*(\{.*?\});', html_text, re.DOTALL)
+                        if universal:
+                            udata = json.loads(universal.group(1))
+                            detail = udata.get('__DEFAULT_SCOPE__', {}).get('webapp.video-detail', {}).get('itemInfo', {}).get('itemStruct', {})
+                            if detail:
+                                desc = detail.get('desc', '')
+                                if desc and len(desc) > len(description):
+                                    description = desc
+                                if not thumbnail and detail.get('video', {}).get('cover'):
+                                    thumbnail = detail['video']['cover']
+                        if not universal:
+                            sigi = re.search(r'<script id="SIGI_STATE"[^>]*>(.*?)</script>', html_text, re.DOTALL)
+                            if sigi:
+                                sigi_data = json.loads(sigi.group(1))
+                                item_module = sigi_data.get('ItemModule', {})
+                                if item_module:
+                                    first_item = next(iter(item_module.values()), {})
+                                    desc = first_item.get('desc', '')
+                                    if desc and len(desc) > len(description):
+                                        description = desc
+                    except Exception as e_sigi:
+                        logger.warning(f"TikTok SIGI/UNIVERSAL parsing failed: {e_sigi}")
                 
                 # 3. Thumbnail
                 if not thumbnail:
@@ -201,6 +247,15 @@ def get_video_data(url: str, extract_audio: bool = False):
                     if img_match:
                         thumbnail = html.unescape(img_match.group(1))
                 
+                # oEmbed caption fallback for TikTok
+                if "tiktok.com" in url:
+                    if tiktok_oembed_caption and (not description or description == "No description available" or len(description) < 100):
+                        description = tiktok_oembed_caption
+                    if tiktok_oembed_title and (not title or title == "Unknown Recipe"):
+                        title = tiktok_oembed_title
+                    if tiktok_oembed_thumbnail and not thumbnail:
+                        thumbnail = tiktok_oembed_thumbnail
+
                 info = {
                     'title': title,
                     'description': description,
