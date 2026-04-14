@@ -100,12 +100,13 @@ function HomeContent() {
     }
   }, []);
 
-  const fetchCloudRecipes = async (token: string) => {
+  const fetchCloudRecipes = async (token: string, attempt = 1) => {
     setCookbookLoading(true);
     setCookbookError(null);
     try {
       const res = await fetch(`${API_URL}/recipes`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+        headers: { 'Authorization': `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
       });
       if (res.ok) {
         const recipes = await res.json();
@@ -117,11 +118,17 @@ function HomeContent() {
       } else {
         setCookbookError('Could not load your recipes from the cloud. Showing cached data.');
       }
-    } catch (e) {
-      setCookbookError('Could not reach the server. Showing cached data.');
-    } finally {
-      setCookbookLoading(false);
+      setCookbookError('Could not load recipes from the cloud. Showing cached data.');
+    } catch {
+      if (attempt < 3) {
+        // Server may be cold-starting on Render free tier — retry
+        setCookbookError(`Server is waking up… retrying (${attempt}/3)`);
+        await new Promise(r => setTimeout(r, 5000 * attempt));
+        return fetchCloudRecipes(token, attempt + 1);
+      }
+      setCookbookError('Server took too long to respond. Showing cached data. Tap to retry.');
     }
+    setCookbookLoading(false);
   };
 
   const handleGoogleLogin = async (credentialResponse: CredentialResponse) => {
@@ -943,7 +950,17 @@ function HomeContent() {
               </div>
 
               {cookbookError && (
-                <div className={styles.error} style={{ marginBottom: '1rem' }}>{cookbookError}</div>
+                <div
+                  className={styles.error}
+                  style={{ marginBottom: '1rem', cursor: cookbookError.includes('retry') || cookbookError.includes('Tap') ? 'pointer' : 'default' }}
+                  onClick={() => {
+                    if (user && (cookbookError.includes('Tap') || cookbookError.includes('cached'))) {
+                      fetchCloudRecipes(user.token);
+                    }
+                  }}
+                >
+                  {cookbookError}
+                </div>
               )}
 
               {/* Grid View */}
