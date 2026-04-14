@@ -1,6 +1,6 @@
 -- Shared recipe links
 CREATE TABLE IF NOT EXISTS shared_links (
-    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     token       TEXT UNIQUE NOT NULL,
     recipes     JSONB NOT NULL,
     created_by  UUID REFERENCES users(id) ON DELETE SET NULL,

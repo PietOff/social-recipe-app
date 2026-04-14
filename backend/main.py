@@ -4,9 +4,8 @@ import logging
 import typing_extensions
 import secrets
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Depends, Header, Request
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import Response
 from pydantic import BaseModel
 import yt_dlp
 import requests
@@ -443,7 +442,6 @@ def extract_frames(video_path: str, num_frames: int = 4) -> List[str]:
     """
     Extracts key frames from video using FFmpeg and converts to base64.
     """
-    import subprocess
     frames = []
     try:
         # Get duration

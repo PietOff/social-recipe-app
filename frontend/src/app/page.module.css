@@ -326,6 +326,15 @@
   font-weight: 500;
 }
 
+.metaItem {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+  opacity: 0.85;
+}
+
 .splitSection {
   display: grid;
   grid-template-columns: 1fr 1.2fr;
