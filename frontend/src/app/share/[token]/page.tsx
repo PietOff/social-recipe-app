@@ -3,7 +3,7 @@
 import React, { useState, useEffect, use } from 'react';
 import { Recipe } from '../../../types';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://social-recipe-appsocial-recipe-backend.onrender.com';
+const API_URL = '/api';
 
 export default function SharePage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = use(params);
