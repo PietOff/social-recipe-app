@@ -462,28 +462,28 @@ function HomeContent() {
   const [shareLink, setShareLink] = useState<string | null>(null);
   const [shareLoading, setShareLoading] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
-  const shareLinkRef = React.useRef<HTMLInputElement>(null);
 
-  const copyShareLink = (link: string) => {
-    // Try modern clipboard API first
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(link).then(() => {
+  const copyToClipboard = (text: string) => {
+    const doFallback = () => {
+      const el = document.createElement('textarea');
+      el.value = text;
+      el.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
+      document.body.appendChild(el);
+      el.focus();
+      el.select();
+      try { document.execCommand('copy'); } catch { /* ignore */ }
+      document.body.removeChild(el);
+      setShareCopied(true);
+      setTimeout(() => setShareCopied(false), 2500);
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(() => {
         setShareCopied(true);
         setTimeout(() => setShareCopied(false), 2500);
-      }).catch(() => fallbackCopy());
+      }).catch(doFallback);
     } else {
-      fallbackCopy();
+      doFallback();
     }
-  };
-
-  const fallbackCopy = () => {
-    const input = shareLinkRef.current;
-    if (!input) return;
-    input.select();
-    input.setSelectionRange(0, 99999);
-    document.execCommand('copy');
-    setShareCopied(true);
-    setTimeout(() => setShareCopied(false), 2500);
   };
 
   const handleShare = async (recipesToShare: Recipe[]) => {
@@ -499,8 +499,7 @@ function HomeContent() {
       const { token: shareToken } = await res.json();
       const link = `${window.location.origin}/share/${shareToken}`;
       setShareLink(link);
-      // Copy after state update so the input is in the DOM
-      setTimeout(() => copyShareLink(link), 50);
+      copyToClipboard(link);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -700,8 +699,8 @@ function HomeContent() {
 
               {shareLink && (
                 <div className={styles.shareToast}>
-                  <input ref={shareLinkRef} readOnly value={shareLink} onClick={e => (e.target as HTMLInputElement).select()} className={styles.shareLinkInput} />
-                  <button onClick={() => copyShareLink(shareLink)} className={styles.button} style={{ whiteSpace: 'nowrap', padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}>
+                  <input readOnly value={shareLink} onClick={e => (e.target as HTMLInputElement).select()} className={styles.shareLinkInput} />
+                  <button onClick={() => copyToClipboard(shareLink)} className={styles.button} style={{ whiteSpace: 'nowrap', padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}>
                     {shareCopied ? 'Copied!' : 'Copy'}
                   </button>
                   <button onClick={() => { setShareLink(null); setShareCopied(false); }} className={styles.iconButton} style={{ opacity: 0.5, padding: '0 0.25rem' }}>×</button>
