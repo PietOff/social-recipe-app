@@ -11,3 +11,8 @@ node_modules/
 dist/
 build/
 .DS_Store
+
+# Claude Code internal files
+.agents/
+.claude/skills/
+skills-lock.json
