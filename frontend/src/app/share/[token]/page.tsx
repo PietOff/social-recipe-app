@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, use } from 'react';
 import { Recipe } from '../../../types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://social-recipe-appsocial-recipe-backend.onrender.com';
 
-export default function SharePage({ params }: { params: { token: string } }) {
+export default function SharePage({ params }: { params: Promise<{ token: string }> }) {
+  const { token } = use(params);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -13,7 +14,7 @@ export default function SharePage({ params }: { params: { token: string } }) {
   const [saving, setSaving] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API_URL}/share/${params.token}`)
+    fetch(`${API_URL}/share/${token}`)
       .then(r => {
         if (!r.ok) throw new Error('Share link not found or expired.');
         return r.json();
@@ -21,7 +22,7 @@ export default function SharePage({ params }: { params: { token: string } }) {
       .then(data => setRecipes(Array.isArray(data.recipes) ? data.recipes : [data.recipes]))
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
-  }, [params.token]);
+  }, [token]);
 
   const saveRecipe = async (recipe: Recipe) => {
     const userRaw = localStorage.getItem('chefSocial_user');
