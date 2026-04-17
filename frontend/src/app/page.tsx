@@ -131,7 +131,7 @@ function HomeContent() {
     setCookbookLoading(false);
   };
 
-  const handleGoogleLogin = async (credentialResponse: CredentialResponse) => {
+  const handleGoogleLogin = async (credentialResponse: CredentialResponse, attempt = 1) => {
     if (!credentialResponse.credential) return;
 
     setAuthLoading(true);
@@ -140,7 +140,8 @@ function HomeContent() {
       const res = await fetch(`${API_URL}/auth/google`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ credential: credentialResponse.credential })
+        body: JSON.stringify({ credential: credentialResponse.credential }),
+        signal: AbortSignal.timeout(15000),
       });
 
       if (res.ok) {
@@ -162,19 +163,27 @@ function HomeContent() {
               body: JSON.stringify(r)
             });
           }
-          localStorage.removeItem('chefSocial_cookbook'); // Clear local after migration
+          localStorage.removeItem('chefSocial_cookbook');
         }
 
-        // Fetch all cloud recipes
         fetchCloudRecipes(userData.token);
+      } else if (res.status === 503 && attempt < 3) {
+        setError(`Server is waking up… retrying (${attempt}/3)`);
+        await new Promise(r => setTimeout(r, 5000 * attempt));
+        setError(null);
+        return handleGoogleLogin(credentialResponse, attempt + 1);
       } else {
         const errData = await res.json().catch(() => ({ detail: 'Login failed' }));
         setError(`Login failed: ${errData.detail || res.statusText}`);
-        console.error('Login failed:', errData);
       }
     } catch (e: any) {
-      setError(`Login error: ${e.message}`);
-      console.error('Google login error', e);
+      if (attempt < 3) {
+        setError(`Server is waking up… retrying (${attempt}/3)`);
+        await new Promise(r => setTimeout(r, 5000 * attempt));
+        setError(null);
+        return handleGoogleLogin(credentialResponse, attempt + 1);
+      }
+      setError('Could not reach the server. Please try again in a moment.');
     } finally {
       setAuthLoading(false);
     }
@@ -653,7 +662,7 @@ function HomeContent() {
               ) : (
                 <GoogleLogin
                   onSuccess={handleGoogleLogin}
-                  onError={() => console.error('Login Failed')}
+                  onError={() => setError('Google sign-in failed. Please try again or check that pop-ups are allowed.')}
                   size="medium"
                   theme="filled_black"
                   text="signin"
