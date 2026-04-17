@@ -149,21 +149,29 @@ function HomeContent() {
         setUser(userData);
         localStorage.setItem('chefSocial_user', JSON.stringify(userData));
 
-        // Migrate local recipes to cloud
-        const localRecipes = localStorage.getItem('chefSocial_cookbook');
-        if (localRecipes) {
-          const recipes = JSON.parse(localRecipes);
-          for (const r of recipes) {
-            await fetch(`${API_URL}/recipes`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${userData.token}`
-              },
-              body: JSON.stringify(r)
-            });
-          }
+        // Migrate any locally-stored recipes to cloud (covers both
+        // pre-login saves and recipes that failed to sync during a previous session)
+        const localRaw = localStorage.getItem('chefSocial_cookbook');
+        const cachedRaw = localStorage.getItem('chefSocial_cached_cookbook');
+        const localRecipes: Recipe[] = localRaw ? JSON.parse(localRaw) : [];
+        const cachedRecipes: Recipe[] = cachedRaw ? JSON.parse(cachedRaw) : [];
+        // Merge, dedup by title, prefer local over cached
+        const seen = new Set<string>();
+        const toSync = [...localRecipes, ...cachedRecipes].filter(r => {
+          if (seen.has(r.title)) return false;
+          seen.add(r.title);
+          return !r.id; // only sync recipes without a cloud id
+        });
+        for (const r of toSync) {
+          await fetch(`${API_URL}/recipes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${userData.token}` },
+            body: JSON.stringify(r),
+          });
+        }
+        if (toSync.length > 0) {
           localStorage.removeItem('chefSocial_cookbook');
+          localStorage.removeItem('chefSocial_cached_cookbook');
         }
 
         fetchCloudRecipes(userData.token);
@@ -269,8 +277,11 @@ function HomeContent() {
           if (res.ok) {
             // Replace optimistic entry with server version (gets a real DB id)
             const savedRecipe = await res.json();
-            setSavedRecipes(prev => [savedRecipe, ...prev.filter(r => r.title !== recipeToSave.title)]);
-            localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify([savedRecipe, ...savedRecipes]));
+            setSavedRecipes(prev => {
+              const updated = [savedRecipe, ...prev.filter(r => r.title !== recipeToSave.title)];
+              localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(updated));
+              return updated;
+            });
           } else {
               if (res.status === 401) { handleAuthError(); return; }
             // Cloud failed — keep the optimistic save in local cache
