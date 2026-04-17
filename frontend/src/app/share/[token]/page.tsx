@@ -9,36 +9,55 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
   const { token } = use(params);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMsg, setLoadingMsg] = useState('Loading shared recipes...');
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API_URL}/share/${token}`)
-      .then(r => {
-        if (!r.ok) throw new Error('Share link not found or expired.');
-        return r.json();
-      })
-      .then(data => setRecipes(Array.isArray(data.recipes) ? data.recipes : [data.recipes]))
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+
+    const load = async (attempt = 1) => {
+      try {
+        const res = await fetch(`${API_URL}/share/${token}`, {
+          signal: AbortSignal.timeout(15000),
+        });
+        if (cancelled) return;
+        if (res.status === 404) { setError('This share link was not found or has expired.'); setLoading(false); return; }
+        if (!res.ok) throw new Error(`Server error (${res.status})`);
+        const data = await res.json();
+        setRecipes(Array.isArray(data.recipes) ? data.recipes : [data.recipes]);
+        setLoading(false);
+      } catch (e: any) {
+        if (cancelled) return;
+        if (attempt < 3) {
+          setLoadingMsg(`Server is waking up… retrying (${attempt}/3)`);
+          await new Promise(r => setTimeout(r, 5000 * attempt));
+          return load(attempt + 1);
+        }
+        setError('Could not load the shared recipes. The server may be temporarily unavailable — try again in a moment.');
+        setLoading(false);
+      }
+    };
+
+    load();
+    return () => { cancelled = true; };
   }, [token]);
 
   const saveRecipe = async (recipe: Recipe) => {
     const userRaw = localStorage.getItem('chefSocial_user');
-    if (!userRaw) {
-      window.location.href = '/';
-      return;
-    }
-    const { token } = JSON.parse(userRaw);
+    if (!userRaw) { window.location.href = '/'; return; }
+    const { token: authToken } = JSON.parse(userRaw);
     setSaving(recipe.title);
     try {
       const res = await fetch(`${API_URL}/recipes`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
         body: JSON.stringify(recipe),
       });
       if (res.ok) setSaved(prev => new Set([...prev, recipe.title]));
+      else if (res.status === 401) { window.location.href = '/'; }
+      else alert('Failed to save. Please try again.');
     } catch {
       alert('Failed to save. Please try again.');
     } finally {
@@ -55,7 +74,7 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
   if (loading) return (
     <main style={styles.main}>
       <div style={styles.card}>
-        <p style={{ opacity: 0.6, textAlign: 'center' }}>Loading shared recipes...</p>
+        <p style={{ opacity: 0.6, textAlign: 'center' }}>{loadingMsg}</p>
       </div>
     </main>
   );
@@ -63,7 +82,7 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
   if (error) return (
     <main style={styles.main}>
       <div style={styles.card}>
-        <h2 style={{ marginBottom: '0.5rem' }}>Link not found</h2>
+        <h2 style={{ marginBottom: '0.5rem' }}>Couldn't load recipes</h2>
         <p style={{ opacity: 0.6 }}>{error}</p>
         <a href="/" style={styles.link}>Go to ChefSocial →</a>
       </div>
@@ -103,7 +122,7 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
                   disabled={saved.has(recipe.title) || saving === recipe.title}
                   style={{ ...styles.saveBtn, ...(saved.has(recipe.title) ? styles.savedBtn : {}) }}
                 >
-                  {saved.has(recipe.title) ? 'Saved!' : saving === recipe.title ? '...' : 'Save'}
+                  {saved.has(recipe.title) ? 'Saved!' : saving === recipe.title ? '...' : 'Save to Cookbook'}
                 </button>
               </div>
 
@@ -163,7 +182,7 @@ const styles: Record<string, React.CSSProperties> = {
   split: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '0.5rem' },
   sectionTitle: { margin: '0 0 0.5rem', fontSize: '1rem', opacity: 0.9 },
   list: { paddingLeft: '1.2rem', margin: 0, lineHeight: 1.7, fontSize: '0.88rem' },
-  saveBtn: { flexShrink: 0, padding: '0.4rem 1rem', borderRadius: '20px', border: 'none', background: 'linear-gradient(90deg, #FF6B35, #FF8E53)', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: '0.85rem' },
+  saveBtn: { flexShrink: 0, padding: '0.4rem 1rem', borderRadius: '20px', border: 'none', background: 'linear-gradient(90deg, #FF6B35, #FF8E53)', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: '0.85rem', whiteSpace: 'nowrap' },
   savedBtn: { background: 'rgba(255,255,255,0.15)', cursor: 'default' },
   saveAllBtn: { padding: '0.6rem 1.5rem', borderRadius: '24px', border: 'none', background: 'linear-gradient(90deg, #FF6B35, #FF8E53)', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: '0.95rem' },
   footer: { textAlign: 'center', marginTop: '3rem' },

@@ -906,12 +906,20 @@ async def create_share(request: ShareRequest, user: dict = Depends(verify_jwt)):
     if not request.recipes:
         raise HTTPException(status_code=400, detail="No recipes provided")
 
-    token = secrets.token_hex(8)  # 16-char hex, e.g. "a3f8c12d9e4b7061"
-    supabase.table("shared_links").insert({
-        "token": token,
-        "recipes": request.recipes,
-        "created_by": user["user_id"],
-    }).execute()
+    token = secrets.token_hex(8)
+    try:
+        result = supabase.table("shared_links").insert({
+            "token": token,
+            "recipes": request.recipes,
+            "created_by": user["user_id"],
+        }).execute()
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to save share link — make sure the shared_links table exists in Supabase (run migration 003)")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Share insert error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save share link: {str(e)}")
 
     return {"token": token}
 

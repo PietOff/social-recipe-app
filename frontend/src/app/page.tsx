@@ -525,7 +525,7 @@ function HomeContent() {
     }
   };
 
-  const handleShare = async (recipesToShare: Recipe[]) => {
+  const handleShare = async (recipesToShare: Recipe[], attempt = 1) => {
     if (!user) { setError('Sign in to share recipes.'); return; }
     setShareLoading(true);
     try {
@@ -533,14 +533,32 @@ function HomeContent() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${user.token}` },
         body: JSON.stringify({ recipes: recipesToShare }),
+        signal: AbortSignal.timeout(15000),
       });
-      if (!res.ok) throw new Error('Failed to create share link');
+      if (res.status === 503 && attempt < 3) {
+        setError(`Server is waking up… retrying (${attempt}/3)`);
+        await new Promise(r => setTimeout(r, 5000 * attempt));
+        setError(null);
+        setShareLoading(false);
+        return handleShare(recipesToShare, attempt + 1);
+      }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Failed to create share link' }));
+        throw new Error(err.detail || 'Failed to create share link');
+      }
       const { token: shareToken } = await res.json();
       const link = `${window.location.origin}/share/${shareToken}`;
       setShareLink(link);
       copyToClipboard(link);
     } catch (e: any) {
-      setError(e.message);
+      if (attempt < 3 && (e.name === 'TimeoutError' || e.name === 'TypeError')) {
+        setError(`Server is waking up… retrying (${attempt}/3)`);
+        await new Promise(r => setTimeout(r, 5000 * attempt));
+        setError(null);
+        setShareLoading(false);
+        return handleShare(recipesToShare, attempt + 1);
+      }
+      setError(e.name === 'TimeoutError' ? 'Server took too long. Please try again.' : e.message);
     } finally {
       setShareLoading(false);
     }
