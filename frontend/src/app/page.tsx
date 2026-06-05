@@ -1,14 +1,29 @@
 'use client';
 
 import React, { useState } from 'react';
-import { GoogleOAuthProvider, GoogleLogin, CredentialResponse } from '@react-oauth/google';
 import RecipeCard from '../components/RecipeCard';
 import { CategoryAccordion } from '../components/CategoryAccordion';
 import { Recipe } from '../types';
 import styles from './page.module.css';
+import { auth, db } from '../firebase';
+import { 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  signOut, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  collection, 
+  doc, 
+  addDoc, 
+  getDocs, 
+  deleteDoc, 
+  query, 
+  where, 
+  setDoc 
+} from 'firebase/firestore';
 
-const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || '';
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://social-recipe-appsocial-recipe-backend.onrender.com';
+const API_URL = '/api';
 
 interface User {
   id: string;
@@ -76,116 +91,138 @@ function HomeContent() {
       }
     }
 
-    // 2. Load user and sync
-    const savedUser = localStorage.getItem('chefSocial_user');
-    if (savedUser) {
-      try {
-        const parsedUser = JSON.parse(savedUser);
-        setUser(parsedUser);
-        // Refresh from cloud
-        fetchCloudRecipes(parsedUser.token);
-      } catch (e) {
-        console.error('Failed to load user', e);
-      }
-    } else {
-      // Fallback for legacy / non-logged-in users
-      const saved = localStorage.getItem('chefSocial_cookbook');
-      if (saved && !cachedCookbook) {
-        try {
-          setSavedRecipes(JSON.parse(saved));
-        } catch (e) {
-          console.error('Failed to load old cookbook', e);
+    // 2. Listen to Auth State
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        const token = await firebaseUser.getIdToken();
+        const userData = {
+          id: firebaseUser.uid,
+          email: firebaseUser.email || '',
+          name: firebaseUser.displayName || '',
+          avatar_url: firebaseUser.photoURL || '',
+          token: token
+        };
+        setUser(userData);
+        localStorage.setItem('chefSocial_user', JSON.stringify(userData));
+        fetchCloudRecipes(firebaseUser.uid);
+      } else {
+        setUser(null);
+        localStorage.removeItem('chefSocial_user');
+        // If not logged in, load from local cookbook
+        const saved = localStorage.getItem('chefSocial_cookbook');
+        if (saved && !cachedCookbook) {
+          try {
+            setSavedRecipes(JSON.parse(saved));
+          } catch (e) {
+            console.error('Failed to load old cookbook', e);
+          }
         }
       }
-    }
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  const fetchCloudRecipes = async (token: string) => {
+  const fetchCloudRecipes = async (uid: string) => {
     setCookbookLoading(true);
     setCookbookError(null);
     try {
-      const res = await fetch(`${API_URL}/recipes`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+      const q = query(collection(db, 'recipes'), where('user_id', '==', uid));
+      const querySnapshot = await getDocs(q);
+      const recipes: Recipe[] = [];
+      querySnapshot.forEach((doc) => {
+        const data = doc.data();
+        recipes.push({
+          id: doc.id,
+          title: data.title,
+          description: data.description || '',
+          ingredients: data.ingredients || [],
+          instructions: data.instructions || [],
+          tags: data.tags || [],
+          image_url: data.image_url || null,
+          prep_time: data.prep_time || null,
+          cook_time: data.cook_time || null,
+          servings: data.servings || null,
+        });
       });
-      if (res.ok) {
-        const recipes = await res.json();
-        setSavedRecipes(recipes);
-        localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(recipes));
-      } else if (res.status === 401) {
-        handleAuthError();
-        return;
-      } else {
-        setCookbookError('Could not load your recipes from the cloud. Showing cached data.');
-      }
+      // Sort client-side (no index required)
+      setSavedRecipes(recipes);
+      localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(recipes));
     } catch (e) {
-      setCookbookError('Could not reach the server. Showing cached data.');
+      console.error('Failed to fetch cloud recipes', e);
+      setCookbookError('Could not reach the database. Showing cached data.');
     } finally {
       setCookbookLoading(false);
     }
   };
 
-  const handleGoogleLogin = async (credentialResponse: CredentialResponse) => {
-    if (!credentialResponse.credential) return;
-
+  const handleGoogleLogin = async () => {
     setAuthLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_URL}/auth/google`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ credential: credentialResponse.credential })
-      });
+      const provider = new GoogleAuthProvider();
+      const result = await signInWithPopup(auth, provider);
+      const firebaseUser = result.user;
+      
+      const token = await firebaseUser.getIdToken();
+      const userData = {
+        id: firebaseUser.uid,
+        email: firebaseUser.email || '',
+        name: firebaseUser.displayName || '',
+        avatar_url: firebaseUser.photoURL || '',
+        token: token
+      };
+      setUser(userData);
+      localStorage.setItem('chefSocial_user', JSON.stringify(userData));
 
-      if (res.ok) {
-        const userData = await res.json();
-        setUser(userData);
-        localStorage.setItem('chefSocial_user', JSON.stringify(userData));
-
-        // Migrate local recipes to cloud
-        const localRecipes = localStorage.getItem('chefSocial_cookbook');
-        if (localRecipes) {
+      // Migrate local recipes to Cloud Firestore
+      const localRecipes = localStorage.getItem('chefSocial_cookbook');
+      if (localRecipes) {
+        try {
           const recipes = JSON.parse(localRecipes);
           for (const r of recipes) {
-            await fetch(`${API_URL}/recipes`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${userData.token}`
-              },
-              body: JSON.stringify(r)
+            await addDoc(collection(db, 'recipes'), {
+              user_id: firebaseUser.uid,
+              title: r.title,
+              description: r.description || '',
+              ingredients: r.ingredients || [],
+              instructions: r.instructions || [],
+              tags: r.tags || [],
+              image_url: r.image_url || null,
+              prep_time: r.prep_time || null,
+              cook_time: r.cook_time || null,
+              servings: r.servings || null,
+              created_at: Date.now()
             });
           }
           localStorage.removeItem('chefSocial_cookbook'); // Clear local after migration
+        } catch (e) {
+          console.error('Migration failed:', e);
         }
-
-        // Fetch all cloud recipes
-        fetchCloudRecipes(userData.token);
-      } else {
-        const errData = await res.json().catch(() => ({ detail: 'Login failed' }));
-        setError(`Login failed: ${errData.detail || res.statusText}`);
-        console.error('Login failed:', errData);
       }
+
+      // Fetch all cloud recipes
+      await fetchCloudRecipes(firebaseUser.uid);
     } catch (e: any) {
-      setError(`Login error: ${e.message}`);
+      setError(`Login failed: ${e.message}`);
       console.error('Google login error', e);
     } finally {
       setAuthLoading(false);
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     setUserMenuOpen(false);
-    setUser(null);
-    localStorage.removeItem('chefSocial_user');
-    setSavedRecipes([]);
+    try {
+      await signOut(auth);
+      setUser(null);
+      localStorage.removeItem('chefSocial_user');
+      localStorage.removeItem('chefSocial_cached_cookbook');
+      setSavedRecipes([]);
+    } catch (e) {
+      console.error('Logout failed:', e);
+    }
   };
-  const handleAuthError = () => {
-    setUser(null);
-    localStorage.removeItem('chefSocial_user');
-    setSavedRecipes([]);
-    setCookbookError('Your session has expired. Please sign in again.');
-  };
-
 
   const handleExportCookbook = () => {
     setUserMenuOpen(false);
@@ -210,7 +247,6 @@ function HomeContent() {
 
     if (isAlreadySaved) {
       // Remove recipe
-      // Find the ID of the recipe to delete from the saved list
       const recipeToDelete = savedRecipes.find(r => r.title === recipeToSave.title);
       const newSaved = savedRecipes.filter(r => r.title !== recipeToSave.title);
       setSavedRecipes(newSaved);
@@ -218,50 +254,40 @@ function HomeContent() {
       if (!user) {
         localStorage.setItem('chefSocial_cookbook', JSON.stringify(newSaved));
       } else if (recipeToDelete?.id) {
-        // Cloud delete
+        // Cloud delete from Firestore
         try {
-          const res = await fetch(`${API_URL}/recipes/${recipeToDelete.id}`, {
-            method: 'DELETE',
-            headers: {
-              'Authorization': `Bearer ${user.token}`
-            }
-          });
-          if (!res.ok) {
-              if (res.status === 401) { handleAuthError(); return; }
-            console.error('Failed to delete from cloud');
-            // Revert optimistic update if needed, but for now just log
-          }
+          await deleteDoc(doc(db, 'recipes', recipeToDelete.id));
+          localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(newSaved));
         } catch (e) {
-          console.error('Failed to delete from cloud', e);
+          console.error('Failed to delete from Firestore', e);
         }
       }
     } else {
-      // Optimistic update — show saved immediately regardless of cloud result
+      // Optimistic update
       const optimistic = [recipeToSave, ...savedRecipes];
       setSavedRecipes(optimistic);
 
       if (user) {
         try {
-          const res = await fetch(`${API_URL}/recipes`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${user.token}`
-            },
-            body: JSON.stringify(recipeToSave)
+          const docRef = await addDoc(collection(db, 'recipes'), {
+            user_id: user.id,
+            title: recipeToSave.title,
+            description: recipeToSave.description || '',
+            ingredients: recipeToSave.ingredients || [],
+            instructions: recipeToSave.instructions || [],
+            tags: recipeToSave.tags || [],
+            image_url: recipeToSave.image_url || null,
+            prep_time: recipeToSave.prep_time || null,
+            cook_time: recipeToSave.cook_time || null,
+            servings: recipeToSave.servings || null,
+            created_at: Date.now()
           });
-          if (res.ok) {
-            // Replace optimistic entry with server version (gets a real DB id)
-            const savedRecipe = await res.json();
-            setSavedRecipes(prev => [savedRecipe, ...prev.filter(r => r.title !== recipeToSave.title)]);
-            localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify([savedRecipe, ...savedRecipes]));
-          } else {
-              if (res.status === 401) { handleAuthError(); return; }
-            // Cloud failed — keep the optimistic save in local cache
-            localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(optimistic));
-          }
+          
+          const savedRecipe = { ...recipeToSave, id: docRef.id };
+          setSavedRecipes(prev => [savedRecipe, ...prev.filter(r => r.title !== recipeToSave.title)]);
+          localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify([savedRecipe, ...savedRecipes]));
         } catch (e) {
-          // Network error — keep locally so the user doesn't lose their save
+          console.error('Cloud save failed, kept locally', e);
           localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(optimistic));
         }
       } else {
@@ -284,7 +310,6 @@ function HomeContent() {
   };
 
   const saveRecipeDirect = async (recipeToSave: Recipe) => {
-    // Non-toggling save used by bulk import — uses functional updater to avoid stale closure
     setSavedRecipes(prev => {
       if (prev.some(r => r.title === recipeToSave.title)) return prev;
       const updated = [recipeToSave, ...prev];
@@ -294,15 +319,21 @@ function HomeContent() {
 
     if (user) {
       try {
-        const res = await fetch(`${API_URL}/recipes`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${user.token}` },
-          body: JSON.stringify(recipeToSave),
+        const docRef = await addDoc(collection(db, 'recipes'), {
+          user_id: user.id,
+          title: recipeToSave.title,
+          description: recipeToSave.description || '',
+          ingredients: recipeToSave.ingredients || [],
+          instructions: recipeToSave.instructions || [],
+          tags: recipeToSave.tags || [],
+          image_url: recipeToSave.image_url || null,
+          prep_time: recipeToSave.prep_time || null,
+          cook_time: recipeToSave.cook_time || null,
+          servings: recipeToSave.servings || null,
+          created_at: Date.now()
         });
-        if (res.ok) {
-          const saved = await res.json();
-          setSavedRecipes(prev => [saved, ...prev.filter(r => r.title !== recipeToSave.title)]);
-        }
+        const saved = { ...recipeToSave, id: docRef.id };
+        setSavedRecipes(prev => [saved, ...prev.filter(r => r.title !== recipeToSave.title)]);
       } catch (e) {
         console.warn('Cloud save failed for recipe, kept locally', e);
       }
@@ -327,7 +358,6 @@ function HomeContent() {
 
       const videoId = toImport[i].video_id ?? toImport[i].url;
 
-      // Skip entirely if we've already imported this video — no Groq call
       if (importedVideoIds.has(videoId)) continue;
 
       try {
@@ -342,7 +372,6 @@ function HomeContent() {
         if (msg.includes('rate_limit_exceeded') || msg.includes('Rate limit')) {
           const retryMatch = msg.match(/try again in ([^.]+)/i);
           const retryHint = retryMatch ? ` Try again in ${retryMatch[1].trim()}.` : '';
-          // Persist whatever we managed to import before hitting the limit
           if (newlyImportedVideoIds.length > 0) {
             const updated = new Set([...importedVideoIds, ...newlyImportedVideoIds]);
             setImportedVideoIds(updated);
@@ -361,7 +390,6 @@ function HomeContent() {
       if (i < toImport.length - 1) await new Promise(res => setTimeout(res, 500));
     }
 
-    // Persist all newly imported video IDs so future imports skip them
     if (newlyImportedVideoIds.length > 0) {
       const updated = new Set([...importedVideoIds, ...newlyImportedVideoIds]);
       setImportedVideoIds(updated);
@@ -386,7 +414,6 @@ function HomeContent() {
     setCollectionTitle(null);
 
     try {
-      // First, try to detect if this is a collection URL
       const collectionRes = await fetch(`${API_URL}/extract-collection`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -401,7 +428,6 @@ function HomeContent() {
           setCollectionTitle(collectionData.collection_title || 'TikTok Collection');
           setLoading(false);
 
-          // Classify all titles in one batch call
           setClassifying(true);
           try {
             const classifyRes = await fetch(`${API_URL}/classify-recipes`, {
@@ -415,10 +441,8 @@ function HomeContent() {
                 results.filter((r: { video_id: string; is_recipe: boolean }) => r.is_recipe)
                        .map((r: { video_id: string; is_recipe: boolean }) => r.video_id)
               );
-              // Default-select only recipe videos; fall back to all if classification returned nothing
               setSelectedVideoIds(recipeIds.size > 0 ? recipeIds : new Set(videos.map(v => v.video_id ?? v.url)));
             } else {
-              // Classification failed — select all
               setSelectedVideoIds(new Set(videos.map(v => v.video_id ?? v.url)));
             }
           } catch {
@@ -430,7 +454,6 @@ function HomeContent() {
         }
       }
 
-      // Not a collection — extract as single recipe
       const data = await extractSingleRecipe(url);
       setRecipe(data);
     } catch (err: any) {
@@ -446,17 +469,12 @@ function HomeContent() {
       const updated = savedRecipes.filter(r => r.title !== recipe.title);
       setSavedRecipes(updated);
 
-      // Update appropriate storage
       if (user) {
         localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(updated));
-        // Also delete from cloud
         if (recipe.id) {
           try {
-            await fetch(`${API_URL}/recipes/${recipe.id}`, {
-              method: 'DELETE',
-              headers: { 'Authorization': `Bearer ${user.token}` }
-            });
-          } catch (e) { console.error("Cloud delete failed", e); }
+            await deleteDoc(doc(db, 'recipes', recipe.id));
+          } catch (e) { console.error("Firestore delete failed", e); }
         }
       } else {
         localStorage.setItem('chefSocial_cookbook', JSON.stringify(updated));
@@ -477,7 +495,6 @@ function HomeContent() {
   const shareLinkRef = React.useRef<HTMLInputElement>(null);
 
   const copyShareLink = (link: string) => {
-    // Try modern clipboard API first
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(link).then(() => {
         setShareCopied(true);
@@ -502,19 +519,19 @@ function HomeContent() {
     if (!user) { setError('Sign in to share recipes.'); return; }
     setShareLoading(true);
     try {
-      const res = await fetch(`${API_URL}/share`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${user.token}` },
-        body: JSON.stringify({ recipes: recipesToShare }),
+      const shareToken = Math.random().toString(36).substring(2, 18);
+      
+      await setDoc(doc(db, 'shared_links', shareToken), {
+        recipes: recipesToShare,
+        created_by: user.id,
+        created_at: Date.now()
       });
-      if (!res.ok) throw new Error('Failed to create share link');
-      const { token: shareToken } = await res.json();
+
       const link = `${window.location.origin}/share/${shareToken}`;
       setShareLink(link);
-      // Copy after state update so the input is in the DOM
       setTimeout(() => copyShareLink(link), 50);
     } catch (e: any) {
-      setError(e.message);
+      setError(`Failed to create share link: ${e.message}`);
     } finally {
       setShareLoading(false);
     }
@@ -536,7 +553,6 @@ function HomeContent() {
   ];
 
   const TRANSLATIONS: Record<string, string[]> = {
-    // English -> Dutch & Synonyms
     'chicken': ['kip', 'gevogelte', 'poultry'],
     'beef': ['rund', 'biefstuk', 'steak', 'meat'],
     'pork': ['varken', 'ham', 'spek', 'bacon', 'pork belly'],
@@ -549,7 +565,6 @@ function HomeContent() {
     'egg': ['ei', 'eieren', 'eggs'],
     'bread': ['brood', 'toast', 'sandwich'],
 
-    // Dutch -> English & Synonyms
     'kip': ['chicken', 'poultry'],
     'rund': ['beef', 'steak'],
     'varken': ['pork', 'ham', 'bacon'],
@@ -568,13 +583,10 @@ function HomeContent() {
   };
 
   const filteredRecipes = savedRecipes.filter(r => {
-    // 1. Search Query (Bilingual)
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      // Expand query with synonyms/translations
       const terms = [q];
       if (TRANSLATIONS[q]) terms.push(...TRANSLATIONS[q]);
-      // Also check partial matches for keys in translation map? (Simple approach first)
 
       const textToSearch = [
         r.title,
@@ -586,7 +598,6 @@ function HomeContent() {
       const matches = terms.some(term => textToSearch.includes(term));
       if (!matches) return false;
     }
-    // 2. Category Filter
     if (selectedCategory !== "All") {
       const tags = (r.tags || (r.category ? categoryToTags(r.category) : [])).map(t => t.toLowerCase());
       return tags.includes(selectedCategory.toLowerCase());
@@ -645,14 +656,25 @@ function HomeContent() {
                   )}
                 </>
               ) : (
-                <GoogleLogin
-                  onSuccess={handleGoogleLogin}
-                  onError={() => console.error('Login Failed')}
-                  size="medium"
-                  theme="filled_black"
-                  text="signin"
-                  shape="pill"
-                />
+                <button
+                  onClick={handleGoogleLogin}
+                  disabled={authLoading}
+                  className={styles.button}
+                  style={{
+                    padding: '0.5rem 1.2rem',
+                    fontSize: '0.88rem',
+                    background: 'var(--primary-gradient)',
+                    border: 'none',
+                    borderRadius: '24px',
+                    color: '#fff',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    boxShadow: '0 4px 15px rgba(255, 107, 53, 0.35)',
+                    transition: 'transform 0.2s ease'
+                  }}
+                >
+                  {authLoading ? 'Signing in...' : 'Sign In with Google'}
+                </button>
               )}
             </div>
           </div>
@@ -1038,12 +1060,6 @@ function HomeContent() {
   );
 }
 
-// Wrap in GoogleOAuthProvider
 export default function Home() {
-  return (
-    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
-      <HomeContent />
-    </GoogleOAuthProvider>
-  );
+  return <HomeContent />;
 }
-

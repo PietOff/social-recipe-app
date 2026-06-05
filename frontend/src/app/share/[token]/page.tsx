@@ -2,8 +2,8 @@
 
 import React, { useState, useEffect } from 'react';
 import { Recipe } from '../../../types';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://social-recipe-appsocial-recipe-backend.onrender.com';
+import { db } from '../../../firebase';
+import { doc, getDoc, addDoc, collection } from 'firebase/firestore';
 
 export default function SharePage({ params }: { params: { token: string } }) {
   const [recipes, setRecipes] = useState<Recipe[]>([]);
@@ -13,12 +13,14 @@ export default function SharePage({ params }: { params: { token: string } }) {
   const [saving, setSaving] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API_URL}/share/${params.token}`)
-      .then(r => {
-        if (!r.ok) throw new Error('Share link not found or expired.');
-        return r.json();
+    getDoc(doc(db, 'shared_links', params.token))
+      .then(docSnap => {
+        if (!docSnap.exists()) {
+          throw new Error('Share link not found or expired.');
+        }
+        const data = docSnap.data();
+        setRecipes(Array.isArray(data.recipes) ? data.recipes : [data.recipes]);
       })
-      .then(data => setRecipes(Array.isArray(data.recipes) ? data.recipes : [data.recipes]))
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
   }, [params.token]);
@@ -29,16 +31,25 @@ export default function SharePage({ params }: { params: { token: string } }) {
       window.location.href = '/';
       return;
     }
-    const { token } = JSON.parse(userRaw);
+    const user = JSON.parse(userRaw);
     setSaving(recipe.title);
     try {
-      const res = await fetch(`${API_URL}/recipes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify(recipe),
+      await addDoc(collection(db, 'recipes'), {
+        user_id: user.id,
+        title: recipe.title,
+        description: recipe.description || '',
+        ingredients: recipe.ingredients || [],
+        instructions: recipe.instructions || [],
+        tags: recipe.tags || [],
+        image_url: recipe.image_url || null,
+        prep_time: recipe.prep_time || null,
+        cook_time: recipe.cook_time || null,
+        servings: recipe.servings || null,
+        created_at: Date.now()
       });
-      if (res.ok) setSaved(prev => new Set([...prev, recipe.title]));
-    } catch {
+      setSaved(prev => new Set([...prev, recipe.title]));
+    } catch (e) {
+      console.error(e);
       alert('Failed to save. Please try again.');
     } finally {
       setSaving(null);
