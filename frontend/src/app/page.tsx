@@ -310,7 +310,7 @@ function HomeContent() {
     const res = await fetch(`${API_URL}/extract-recipe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: videoUrl }),
+      body: JSON.stringify({ url: videoUrl.trim() }),
     });
     if (!res.ok) {
       const errData = await res.json();
@@ -427,7 +427,7 @@ function HomeContent() {
       const collectionRes = await fetch(`${API_URL}/extract-collection`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url: url.trim() }),
       });
 
       if (collectionRes.ok) {
