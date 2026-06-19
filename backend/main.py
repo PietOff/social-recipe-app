@@ -10,6 +10,8 @@ import yt_dlp
 import requests
 import re
 from groq import Groq
+from google import genai
+from google.genai import types
 import html
 from dotenv import load_dotenv
 import tempfile
@@ -331,10 +333,10 @@ def transcribe_audio(audio_path: str, api_key: str):
 
 def parse_with_llm(text_data: str, api_key: str):
     """
-    Uses Groq (Llama 3) to parse the raw text into a structured Recipe.
+    Uses Google Gemini (1.5 Flash) to parse the raw text into a structured Recipe.
     """
     try:
-        client = Groq(api_key=api_key)
+        client = genai.Client(api_key=api_key)
         
         prompt = f"""
         You are an expert chef and data parser. Extract a structured recipe from the text below, which comes from a social media cooking video (TikTok/Instagram/YouTube). The text may include video titles, descriptions, captions, subtitles, and/or an audio transcript.
@@ -368,20 +370,20 @@ def parse_with_llm(text_data: str, api_key: str):
         {text_data}
         """
         
-        completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile", 
-            messages=[
-                {"role": "system", "content": "You are a JSON-only API. You must return a valid JSON object and nothing else."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0,
-            response_format={"type": "json_object"}
+        response = client.models.generate_content(
+            model="gemini-2.5-flash", 
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0,
+                response_mime_type="application/json",
+                system_instruction="You are a JSON-only API. You must return a valid JSON object and nothing else."
+            )
         )
         
-        content = completion.choices[0].message.content
+        content = response.text
         return json.loads(content)
     except Exception as e:
-        logger.error(f"Groq error: {str(e)}")
+        logger.error(f"Gemini error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"AI parsing failed: {str(e)}")
 
 # --- Endpoints ---
@@ -461,44 +463,41 @@ def extract_frames(video_path: str, num_frames: int = 4) -> List[str]:
         
     return frames
 
-def analyze_visuals_with_groq(frames: List[str], api_key: str) -> str:
+def analyze_visuals_with_gemini(frames: List[str], api_key: str) -> str:
     """
-    Sends video frames to Groq's Llama Vision model to read on-screen text and actions.
+    Sends video frames to Gemini to read on-screen text and actions.
     """
     if not frames:
         return ""
         
     try:
-        client = Groq(api_key=api_key)
+        client = genai.Client(api_key=api_key)
         
         # Prepare content: Text prompt + Images
-        content = [
-            {"type": "text", "text": "These are frames from a cooking video. Describe strictly what you see: ingredients shown, amounts visible in text overlays, and cooking actions. Do not hallucinate."}
+        contents = [
+            "These are frames from a cooking video. Describe strictly what you see: ingredients shown, amounts visible in text overlays, and cooking actions. Do not hallucinate."
         ]
         
         for b64 in frames:
-            content.append({
-                "type": "image_url",
-                "image_url": {
-                     "url": f"data:image/jpeg;base64,{b64}"
-                }
-            })
+            contents.append(
+                types.Part.from_bytes(
+                    data=base64.b64decode(b64),
+                    mime_type="image/jpeg"
+                )
+            )
 
-        completion = client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",
-            messages=[
-                {
-                    "role": "user",
-                    "content": content
-                }
-            ],
-            temperature=0,
-            max_tokens=1024,
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents,
+            config=types.GenerateContentConfig(
+                temperature=0,
+                max_output_tokens=1024,
+            )
         )
-        return "\n\n[VISUAL ANALYSIS]:\n" + completion.choices[0].message.content
+        return "\n\n[VISUAL ANALYSIS]:\n" + response.text
         
     except Exception as e:
-        logger.warning(f"Groq Vision analysis failed: {e}")
+        logger.warning(f"Gemini Vision analysis failed: {e}")
         return ""
 
 # --- Endpoints ---
@@ -533,7 +532,7 @@ def classify_recipes(request: ClassifyRequest):
     if not request.videos:
         return {"results": []}
 
-    api_key = request.api_key or os.getenv("GROQ_API_KEY")
+    api_key = request.api_key or os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise HTTPException(status_code=401, detail="API Key required")
 
@@ -554,17 +553,17 @@ Return ONLY this JSON object (one entry per video, same order):
 {{"results": [{{"video_id": "string", "is_recipe": true}}]}}"""
 
     try:
-        client = Groq(api_key=api_key)
-        completion = client.chat.completions.create(
-            model="llama-3.1-8b-instant",  # Fast cheap model — just classification
-            messages=[
-                {"role": "system", "content": "You are a JSON-only API. Return only valid JSON."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0,
-            response_format={"type": "json_object"},
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0,
+                response_mime_type="application/json",
+                system_instruction="You are a JSON-only API. Return only valid JSON."
+            )
         )
-        return json.loads(completion.choices[0].message.content)
+        return json.loads(response.text)
     except Exception as e:
         logger.warning(f"Classification failed: {e} — defaulting all to is_recipe=true")
         # Fail gracefully: mark everything as a recipe so nothing gets silently dropped
@@ -634,9 +633,13 @@ def extract_collection(request: ExtractRequest):
 
 @app.post("/extract-recipe")
 def extract_recipe(request: ExtractRequest):
-    api_key = request.api_key or request.gemini_api_key or os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=401, detail="API Key is required (GROQ_API_KEY)")
+    gemini_api_key = request.gemini_api_key or os.getenv("GEMINI_API_KEY")
+    groq_api_key = request.api_key or os.getenv("GROQ_API_KEY")
+    
+    if not gemini_api_key:
+        raise HTTPException(status_code=401, detail="Gemini API Key is required (GEMINI_API_KEY)")
+    if not groq_api_key:
+        logger.warning("Groq API key not found. Audio transcription will not work.")
 
     # --- STEP 1: Fast pass — metadata + subtitles only (no audio download) ---
     logger.info(f"Step 1: Fast metadata extraction for {request.url}")
@@ -645,7 +648,7 @@ def extract_recipe(request: ExtractRequest):
     # --- STEP 2: If content is rich enough, go straight to LLM ---
     if not is_thin_content(raw_text):
         logger.info(f"Content is rich ({len(raw_text)} chars), skipping audio download")
-        recipe_data = parse_with_llm(raw_text, api_key)
+        recipe_data = parse_with_llm(raw_text, gemini_api_key)
         recipe_data['image_url'] = thumbnail_url
         return recipe_data
 
@@ -653,8 +656,8 @@ def extract_recipe(request: ExtractRequest):
     logger.info("Content thin, attempting audio download + transcription...")
     try:
         _, _, audio_path = get_video_data(request.url, extract_audio=True)
-        if audio_path:
-            transcript = transcribe_audio(audio_path, api_key)
+        if audio_path and groq_api_key:
+            transcript = transcribe_audio(audio_path, groq_api_key)
             if transcript:
                 raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{transcript}"
     except Exception as e:
@@ -681,20 +684,21 @@ def extract_recipe(request: ExtractRequest):
                         ["ffmpeg", "-i", temp_vid_path, "-vn", "-acodec", "libmp3lame", "-y", temp_audio_path],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                     )
-                    transcript = transcribe_audio(temp_audio_path, api_key)
-                    if transcript:
-                        raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{transcript}"
+                    if groq_api_key:
+                        transcript = transcribe_audio(temp_audio_path, groq_api_key)
+                        if transcript:
+                            raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{transcript}"
 
                     # Vision frames
                     frames = extract_frames(temp_vid_path)
-                    visual_desc = analyze_visuals_with_groq(frames, api_key)
+                    visual_desc = analyze_visuals_with_gemini(frames, gemini_api_key)
                     if visual_desc:
                         raw_text += visual_desc
         except Exception as e_vision:
             logger.warning(f"Vision fallback failed: {e_vision}")
 
     # --- STEP 5: Parse whatever we have with LLM ---
-    recipe_data = parse_with_llm(raw_text, api_key)
+    recipe_data = parse_with_llm(raw_text, gemini_api_key)
     recipe_data['image_url'] = thumbnail_url
     return recipe_data
 

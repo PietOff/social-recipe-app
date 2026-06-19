@@ -1,0 +1,10 @@
+{
+  "apphosting": {
+    "backendId": "chefsocial",
+    "rootDir": "frontend",
+    "ignore": [
+      "node_modules",
+      ".git"
+    ]
+  }
+}

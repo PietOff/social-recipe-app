@@ -362,6 +362,8 @@ function HomeContent() {
     const importedTitles = new Set<string>();
     const newlyImportedVideoIds: string[] = [];
 
+    let retryCount = 0;
+
     for (let i = 0; i < toImport.length; i++) {
       if (importCancelled) break;
       setImportProgress({ current: i + 1, total: toImport.length });
@@ -376,28 +378,26 @@ function HomeContent() {
           await saveRecipeDirect(r);
           importedTitles.add(r.title);
           newlyImportedVideoIds.push(videoId);
+          retryCount = 0; // reset on success
         }
       } catch (err: any) {
         const msg: string = err?.message || '';
-        if (msg.includes('rate_limit_exceeded') || msg.includes('Rate limit')) {
-          const retryMatch = msg.match(/try again in ([^.]+)/i);
-          const retryHint = retryMatch ? ` Try again in ${retryMatch[1].trim()}.` : '';
-          if (newlyImportedVideoIds.length > 0) {
-            const updated = new Set([...importedVideoIds, ...newlyImportedVideoIds]);
-            setImportedVideoIds(updated);
-            localStorage.setItem('chefSocial_imported_video_ids', JSON.stringify([...updated]));
-          }
-          setImportProgress(null);
-          setCollectionVideos(null);
-          setCollectionTitle(null);
-          setSelectedVideoIds(new Set());
-          setError(`Daily AI token limit reached — imported ${importedTitles.size} of ${toImport.length} recipes.${retryHint}`);
-          setView('cookbook');
-          return;
+        if ((msg.includes('rate_limit_exceeded') || msg.includes('Rate limit') || msg.includes('429') || msg.includes('Too Many Requests')) && retryCount < 3) {
+          console.warn(`Rate limit hit, retrying video ${i + 1} in 10 seconds... (Attempt ${retryCount + 1}/3)`);
+          retryCount++;
+          i--; // Retry this index
+          await new Promise(res => setTimeout(res, 10000));
+          continue;
         }
-        console.warn(`Skipped video ${i + 1}:`, err);
+        
+        // If we exhausted retries or hit a different error
+        if ((msg.includes('rate_limit_exceeded') || msg.includes('Rate limit') || msg.includes('429'))) {
+           console.error(`Giving up on video ${i + 1} due to persistent rate limits.`);
+        } else {
+           console.warn(`Skipped video ${i + 1}:`, err);
+        }
       }
-      if (i < toImport.length - 1) await new Promise(res => setTimeout(res, 500));
+      if (i < toImport.length - 1) await new Promise(res => setTimeout(res, 1000));
     }
 
     if (newlyImportedVideoIds.length > 0) {
