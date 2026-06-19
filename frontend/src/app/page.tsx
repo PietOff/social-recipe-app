@@ -148,9 +148,13 @@ function HomeContent() {
       // Sort client-side (no index required)
       setSavedRecipes(recipes);
       localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(recipes));
-    } catch (e) {
+    } catch (e: any) {
       console.error('Failed to fetch cloud recipes', e);
-      setCookbookError('Could not reach the database. Showing cached data.');
+      if (e.code === 'permission-denied') {
+        setCookbookError('Database permission denied. Please verify your Firestore Security Rules allow read access.');
+      } else {
+        setCookbookError('Could not reach the database. Showing cached data.');
+      }
     } finally {
       setCookbookLoading(false);
     }
@@ -204,7 +208,13 @@ function HomeContent() {
       // Fetch all cloud recipes
       await fetchCloudRecipes(firebaseUser.uid);
     } catch (e: any) {
-      setError(`Login failed: ${e.message}`);
+      if (e.code === 'auth/unauthorized-domain') {
+        setError(`Login failed: This domain (${window.location.hostname}) is not authorized in your Firebase Console. Please add it under Authentication > Settings > Authorized domains.`);
+      } else if (e.code === 'auth/operation-not-allowed') {
+        setError('Login failed: Google Sign-in is not enabled. Please enable it in the Firebase Console under Authentication > Sign-in method.');
+      } else {
+        setError(`Login failed: ${e.message}`);
+      }
       console.error('Google login error', e);
     } finally {
       setAuthLoading(false);
