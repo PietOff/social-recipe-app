@@ -384,14 +384,20 @@ function HomeContent() {
 
       try {
         const r = await extractSingleRecipe(toImport[i].url);
-        if (r && !existingTitles.has(r.title) && !importedTitles.has(r.title)) {
-          r.source_url = toImport[i].url;
-          r.video_id = videoId;
-          await saveRecipeDirect(r);
-          importedTitles.add(r.title);
-          newlyImportedVideoIds.push(videoId);
-          retryCount = 0; // reset on success
+        const isValidRecipe = r && r.ingredients && r.ingredients.length > 0 && r.title !== "No Recipe Found" && !r.title.includes("TikTok - Make Your Day");
+        
+        if (isValidRecipe) {
+          if (!existingTitles.has(r.title) && !importedTitles.has(r.title)) {
+            r.source_url = toImport[i].url;
+            r.video_id = videoId;
+            await saveRecipeDirect(r);
+            importedTitles.add(r.title);
+            newlyImportedVideoIds.push(videoId);
+          }
+        } else {
+          console.warn(`Skipping video ${i + 1}: No valid recipe extracted.`);
         }
+        retryCount = 0; // reset on success
       } catch (err: any) {
         const msg: string = err?.message || '';
         if ((msg.includes('rate_limit_exceeded') || msg.includes('Rate limit') || msg.includes('429') || msg.includes('Too Many Requests')) && retryCount < 3) {
@@ -409,7 +415,7 @@ function HomeContent() {
            console.warn(`Skipped video ${i + 1}:`, err);
         }
       }
-      if (i < toImport.length - 1) await new Promise(res => setTimeout(res, 1000));
+      if (i < toImport.length - 1) await new Promise(res => setTimeout(res, 4500));
     }
 
     if (newlyImportedVideoIds.length > 0) {
