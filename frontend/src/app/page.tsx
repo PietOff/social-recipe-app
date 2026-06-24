@@ -143,11 +143,17 @@ function HomeContent() {
           prep_time: data.prep_time || null,
           cook_time: data.cook_time || null,
           servings: data.servings || null,
+          source_url: data.source_url || null,
+          video_id: data.video_id || null,
         });
       });
       // Sort client-side (no index required)
       setSavedRecipes(recipes);
       localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(recipes));
+
+      // Hydrate imported IDs from the cloud to prevent duplicates across devices
+      const cloudIds = new Set(recipes.map(r => r.video_id || r.source_url).filter(Boolean) as string[]);
+      setImportedVideoIds(prev => new Set([...prev, ...cloudIds]));
     } catch (e: any) {
       console.error('Failed to fetch cloud recipes', e);
       if (e.code === 'permission-denied') {
@@ -290,6 +296,8 @@ function HomeContent() {
             prep_time: recipeToSave.prep_time || null,
             cook_time: recipeToSave.cook_time || null,
             servings: recipeToSave.servings || null,
+            source_url: recipeToSave.source_url || null,
+            video_id: recipeToSave.video_id || null,
             created_at: Date.now()
           });
           
@@ -340,6 +348,8 @@ function HomeContent() {
           prep_time: recipeToSave.prep_time || null,
           cook_time: recipeToSave.cook_time || null,
           servings: recipeToSave.servings || null,
+          source_url: recipeToSave.source_url || null,
+          video_id: recipeToSave.video_id || null,
           created_at: Date.now()
         });
         const saved = { ...recipeToSave, id: docRef.id };
@@ -375,6 +385,8 @@ function HomeContent() {
       try {
         const r = await extractSingleRecipe(toImport[i].url);
         if (r && !existingTitles.has(r.title) && !importedTitles.has(r.title)) {
+          r.source_url = toImport[i].url;
+          r.video_id = videoId;
           await saveRecipeDirect(r);
           importedTitles.add(r.title);
           newlyImportedVideoIds.push(videoId);

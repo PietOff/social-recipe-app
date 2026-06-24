@@ -18,5 +18,6 @@ export interface Recipe {
     image?: string;
     tags?: string[];
     keywords?: string[];
-    category?: string; // Legacy
+    source_url?: string;
+    video_id?: string;
 }
