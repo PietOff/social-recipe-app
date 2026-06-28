@@ -361,67 +361,30 @@ function HomeContent() {
   };
 
   const handleImportCollection = async () => {
-    if (!collectionVideos) return;
+    if (!collectionVideos || !user) return;
     const toImport = collectionVideos.filter(v => selectedVideoIds.has(v.video_id ?? v.url));
     if (toImport.length === 0) return;
 
-    setImportCancelled(false);
     setImportProgress({ current: 0, total: toImport.length });
 
-    const existingTitles = new Set(savedRecipes.map(r => r.title));
-    const importedTitles = new Set<string>();
-    const newlyImportedVideoIds: string[] = [];
+    try {
+      const res = await fetch(`${API_URL}/import-collection-background`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          urls: toImport.map(v => v.url),
+          user_id: user.id
+        })
+      });
 
-    let retryCount = 0;
-
-    for (let i = 0; i < toImport.length; i++) {
-      if (importCancelled) break;
-      setImportProgress({ current: i + 1, total: toImport.length });
-
-      const videoId = toImport[i].video_id ?? toImport[i].url;
-
-      if (importedVideoIds.has(videoId)) continue;
-
-      try {
-        const r = await extractSingleRecipe(toImport[i].url);
-        const isValidRecipe = r && r.ingredients && r.ingredients.length > 0 && r.title !== "No Recipe Found" && !r.title.includes("TikTok - Make Your Day");
-        
-        if (isValidRecipe) {
-          if (!existingTitles.has(r.title) && !importedTitles.has(r.title)) {
-            r.source_url = toImport[i].url;
-            r.video_id = videoId;
-            await saveRecipeDirect(r);
-            importedTitles.add(r.title);
-            newlyImportedVideoIds.push(videoId);
-          }
-        } else {
-          console.warn(`Skipping video ${i + 1}: No valid recipe extracted.`);
-        }
-        retryCount = 0; // reset on success
-      } catch (err: any) {
-        const msg: string = err?.message || '';
-        if ((msg.includes('rate_limit_exceeded') || msg.includes('Rate limit') || msg.includes('429') || msg.includes('Too Many Requests')) && retryCount < 3) {
-          console.warn(`Rate limit hit, retrying video ${i + 1} in 10 seconds... (Attempt ${retryCount + 1}/3)`);
-          retryCount++;
-          i--; // Retry this index
-          await new Promise(res => setTimeout(res, 10000));
-          continue;
-        }
-        
-        // If we exhausted retries or hit a different error
-        if ((msg.includes('rate_limit_exceeded') || msg.includes('Rate limit') || msg.includes('429'))) {
-           console.error(`Giving up on video ${i + 1} due to persistent rate limits.`);
-        } else {
-           console.warn(`Skipped video ${i + 1}:`, err);
-        }
+      if (!res.ok) {
+        throw new Error('Failed to start background import');
       }
-      if (i < toImport.length - 1) await new Promise(res => setTimeout(res, 4500));
-    }
-
-    if (newlyImportedVideoIds.length > 0) {
-      const updated = new Set([...importedVideoIds, ...newlyImportedVideoIds]);
-      setImportedVideoIds(updated);
-      localStorage.setItem('chefSocial_imported_video_ids', JSON.stringify([...updated]));
+      
+      alert("Background import started successfully! You can safely close the app or switch tabs. Recipes will slowly appear in your cookbook over the next few minutes.");
+    } catch (err) {
+      console.error(err);
+      alert("Failed to start background import. Please try again later.");
     }
 
     setImportProgress(null);

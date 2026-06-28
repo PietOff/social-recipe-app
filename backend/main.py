@@ -18,6 +18,11 @@ import tempfile
 from pathlib import Path
 import base64
 import subprocess
+import time
+import asyncio
+from fastapi import BackgroundTasks
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 # Load env vars
 load_dotenv()
@@ -27,6 +32,21 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Social Recipe Extractor")
+
+# Initialize Firebase Admin
+firebase_service_account = os.getenv("FIREBASE_SERVICE_ACCOUNT")
+db = None
+if firebase_service_account:
+    try:
+        cred_dict = json.loads(firebase_service_account)
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        logger.info("Firebase Admin initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize Firebase Admin: {e}")
+else:
+    logger.warning("FIREBASE_SERVICE_ACCOUNT environment variable not found. Background imports will fail.")
 
 # Configure CORS - allow all Vercel preview URLs
 app.add_middleware(
@@ -702,8 +722,68 @@ def extract_recipe(request: ExtractRequest):
     recipe_data['image_url'] = thumbnail_url
     return recipe_data
 
+class BackgroundImportRequest(BaseModel):
+    urls: List[str]
+    user_id: str
+    gemini_api_key: Optional[str] = None
+    api_key: Optional[str] = None
+
+async def process_collection_background_worker(request: BackgroundImportRequest):
+    if not db:
+        logger.error("Database not initialized, cannot process background import.")
+        return
+
+    gemini_api_key = request.gemini_api_key or os.getenv("GEMINI_API_KEY")
+    if not gemini_api_key:
+        logger.error("Gemini API key missing for background import.")
+        return
+
+    for idx, url in enumerate(request.urls):
+        try:
+            logger.info(f"Background Import: Processing {idx+1}/{len(request.urls)} - {url}")
+            raw_text, thumbnail_url, _ = get_video_data(url, extract_audio=False)
+            recipe_data = parse_with_llm(raw_text, gemini_api_key)
+            recipe_data['image_url'] = thumbnail_url
+            
+            if not recipe_data.get('ingredients') or len(recipe_data['ingredients']) == 0:
+                logger.warning(f"Background Import: Skipped {url} (No ingredients found)")
+                continue
+            if recipe_data.get('title') == "No Recipe Found" or "TikTok - Make Your Day" in recipe_data.get('title', ''):
+                logger.warning(f"Background Import: Skipped {url} (Dummy title detected)")
+                continue
+
+            existing = db.collection('recipes').where('user_id', '==', request.user_id).where('source_url', '==', url).limit(1).get()
+            if len(existing) > 0:
+                logger.info(f"Background Import: Skipped {url} (Already exists)")
+                continue
+
+            recipe_doc = {
+                "user_id": request.user_id,
+                "title": recipe_data.get("title", ""),
+                "description": recipe_data.get("description", ""),
+                "ingredients": recipe_data.get("ingredients", []),
+                "instructions": recipe_data.get("instructions", []),
+                "tags": recipe_data.get("tags", []),
+                "image_url": recipe_data.get("image_url"),
+                "prep_time": recipe_data.get("prep_time"),
+                "cook_time": recipe_data.get("cook_time"),
+                "servings": recipe_data.get("servings"),
+                "source_url": url,
+                "created_at": time.time() * 1000
+            }
+            db.collection("recipes").add(recipe_doc)
+            logger.info(f"Background Import: Saved {recipe_doc['title']}")
+
+        except Exception as e:
+            logger.error(f"Background Import: Error processing {url}: {e}")
+        
+        await asyncio.sleep(4.5)
+
+@app.post("/api/import-collection-background")
+def import_collection_background(request: BackgroundImportRequest, background_tasks: BackgroundTasks):
+    background_tasks.add_task(process_collection_background_worker, request)
+    return {"status": "started", "message": "Background import initiated successfully."}
+
 @app.get("/")
 def health_check():
     return {"status": "ok", "service": "Social Recipe Extractor (Groq+Whisper)"}
-
-

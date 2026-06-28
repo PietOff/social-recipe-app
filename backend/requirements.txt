@@ -6,4 +6,4 @@ google-genai
 typing-extensions
 requests
 groq
-
+firebase-admin
