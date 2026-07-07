@@ -17,6 +17,7 @@ export interface Recipe {
     image_url?: string;
     image?: string;
     tags?: string[];
+    category?: string; // legacy single-category field, kept for migration
     keywords?: string[];
     source_url?: string;
     video_id?: string;

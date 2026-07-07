@@ -22,7 +22,9 @@ import time
 import asyncio
 from fastapi import BackgroundTasks
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import credentials, firestore, storage
+import uuid
+from urllib.parse import quote
 
 # Load env vars
 load_dotenv()
@@ -36,17 +38,62 @@ app = FastAPI(title="Social Recipe Extractor")
 # Initialize Firebase Admin
 firebase_service_account = os.getenv("FIREBASE_SERVICE_ACCOUNT")
 db = None
+storage_bucket = None
 if firebase_service_account:
     try:
         cred_dict = json.loads(firebase_service_account)
         cred = credentials.Certificate(cred_dict)
-        firebase_admin.initialize_app(cred)
+        # Optionally attach a Storage bucket so we can re-host thumbnails.
+        storage_bucket_name = os.getenv("FIREBASE_STORAGE_BUCKET")
+        if storage_bucket_name:
+            firebase_admin.initialize_app(cred, {"storageBucket": storage_bucket_name})
+        else:
+            firebase_admin.initialize_app(cred)
         db = firestore.client()
+        if storage_bucket_name:
+            storage_bucket = storage.bucket()
+            logger.info(f"Firebase Storage bucket ready: {storage_bucket_name}")
+        else:
+            logger.warning("FIREBASE_STORAGE_BUCKET not set; thumbnails will be stored as original (expiring) URLs.")
         logger.info("Firebase Admin initialized successfully.")
     except Exception as e:
         logger.error(f"Failed to initialize Firebase Admin: {e}")
 else:
     logger.warning("FIREBASE_SERVICE_ACCOUNT environment variable not found. Background imports will fail.")
+
+
+def rehost_thumbnail(thumbnail_url: Optional[str], key: Optional[str]) -> Optional[str]:
+    """Download an (expiring) source thumbnail and re-host it in Firebase Storage,
+    returning a permanent download URL. Falls back to the original URL on any
+    failure or if Storage isn't configured, so extraction can never break."""
+    if not thumbnail_url or storage_bucket is None:
+        return thumbnail_url
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
+            "Referer": "https://www.tiktok.com/",
+        }
+        resp = requests.get(thumbnail_url, headers=headers, timeout=15)
+        if resp.status_code != 200 or not resp.content:
+            return thumbnail_url
+        content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+        ext = "jpg"
+        if "png" in content_type:
+            ext = "png"
+        elif "webp" in content_type:
+            ext = "webp"
+        safe_key = re.sub(r"[^A-Za-z0-9_-]", "_", key or uuid.uuid4().hex)[:120]
+        blob = storage_bucket.blob(f"recipe_thumbnails/{safe_key}.{ext}")
+        token = str(uuid.uuid4())
+        blob.metadata = {"firebaseStorageDownloadTokens": token}
+        blob.upload_from_string(resp.content, content_type=content_type or "image/jpeg")
+        return (
+            f"https://firebasestorage.googleapis.com/v0/b/{storage_bucket.name}"
+            f"/o/{quote(blob.name, safe='')}?alt=media&token={token}"
+        )
+    except Exception as e:
+        logger.warning(f"Thumbnail re-host failed, keeping original URL: {e}")
+        return thumbnail_url
 
 # Configure CORS - allow all Vercel preview URLs
 app.add_middleware(
@@ -669,7 +716,7 @@ def extract_recipe(request: ExtractRequest):
     if not is_thin_content(raw_text):
         logger.info(f"Content is rich ({len(raw_text)} chars), skipping audio download")
         recipe_data = parse_with_llm(raw_text, gemini_api_key)
-        recipe_data['image_url'] = thumbnail_url
+        recipe_data['image_url'] = rehost_thumbnail(thumbnail_url, recipe_data.get('video_id') or request.url)
         return recipe_data
 
     # --- STEP 3: Thin content — try audio download + Whisper transcription ---
@@ -719,7 +766,7 @@ def extract_recipe(request: ExtractRequest):
 
     # --- STEP 5: Parse whatever we have with LLM ---
     recipe_data = parse_with_llm(raw_text, gemini_api_key)
-    recipe_data['image_url'] = thumbnail_url
+    recipe_data['image_url'] = rehost_thumbnail(thumbnail_url, recipe_data.get('video_id') or request.url)
     return recipe_data
 
 class BackgroundImportRequest(BaseModel):
@@ -743,7 +790,7 @@ async def process_collection_background_worker(request: BackgroundImportRequest)
             logger.info(f"Background Import: Processing {idx+1}/{len(request.urls)} - {url}")
             raw_text, thumbnail_url, _ = get_video_data(url, extract_audio=False)
             recipe_data = parse_with_llm(raw_text, gemini_api_key)
-            recipe_data['image_url'] = thumbnail_url
+            recipe_data['image_url'] = rehost_thumbnail(thumbnail_url, recipe_data.get('video_id') or url)
             
             if not recipe_data.get('ingredients') or len(recipe_data['ingredients']) == 0:
                 logger.warning(f"Background Import: Skipped {url} (No ingredients found)")

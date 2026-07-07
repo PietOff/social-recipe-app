@@ -73,6 +73,21 @@ function HomeContent() {
   // Helper to migrate legacy single-category recipes
   const categoryToTags = (cat: string) => [cat];
 
+  // Validate that a URL points to a supported recipe source before hitting the API.
+  const isSupportedRecipeUrl = (raw: string): boolean => {
+    try {
+      const host = new URL(raw.trim()).hostname.replace(/^www\./, '').toLowerCase();
+      const supported = [
+        'tiktok.com', 'vm.tiktok.com',
+        'instagram.com',
+        'youtube.com', 'youtu.be', 'm.youtube.com',
+      ];
+      return supported.some(d => host === d || host.endsWith('.' + d));
+    } catch {
+      return false;
+    }
+  };
+
   // Load saved recipes and user on mount
   React.useEffect(() => {
     // 0. Load previously imported TikTok video IDs to avoid redundant Groq calls
@@ -398,6 +413,11 @@ function HomeContent() {
     e.preventDefault();
     if (!url) return;
 
+    if (!isSupportedRecipeUrl(url)) {
+      setError('Please paste a TikTok, Instagram or YouTube link.');
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setRecipe(null);
@@ -530,6 +550,26 @@ function HomeContent() {
 
   // --- VIEW STATE ---
   const [view, setView] = useState<'home' | 'cookbook' | 'details'>('home');
+
+  // Close the open recipe / collection overlay on Escape
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (recipe) {
+        setRecipe(null);
+        if (view === 'details') {
+          setView('cookbook');
+          setTimeout(() => window.scrollTo({ top: cookbookScrollY.current, behavior: 'smooth' }), 50);
+        }
+      } else if (collectionVideos) {
+        setCollectionVideos(null);
+        setCollectionTitle(null);
+        setSelectedVideoIds(new Set());
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [recipe, collectionVideos, view]);
   const [selectMode, setSelectMode] = useState(false);
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
 
