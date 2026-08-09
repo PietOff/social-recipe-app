@@ -20,6 +20,8 @@ export type ImportProgress = {
   currentTitle: string | null;
   status: 'idle' | 'running' | 'paused' | 'finished' | 'cancelled';
   errors: { title: string; reason: string }[];
+  /** Set when the run stopped for an external reason rather than finishing. */
+  stopReason: string | null;
 };
 
 const JOB_KEY = 'chefSocial_import_job';
@@ -50,7 +52,7 @@ const sleep = (ms: number, signal?: AbortSignal) =>
 
 const emptyProgress: ImportProgress = {
   total: 0, done: 0, failed: 0, skipped: 0,
-  currentTitle: null, status: 'idle', errors: [],
+  currentTitle: null, status: 'idle', errors: [], stopReason: null,
 };
 
 /**
@@ -130,10 +132,13 @@ export function useCollectionImport() {
       currentTitle: null,
       status: 'running',
       errors: [],
+      stopReason: null,
     });
 
     let consecutiveOk = 0;
+    let haltReason: string | null = null;
 
+    /** Settles an item permanently: it leaves the queue and will not be retried. */
     const finish = (id: string, outcome: 'done' | 'failed' | 'skipped', title: string, reason?: string) => {
       const j = jobRef.current!;
       j.remaining = j.remaining.filter(x => x !== id);
@@ -144,6 +149,14 @@ export function useCollectionImport() {
         [outcome]: p[outcome] + 1,
         errors: reason ? [...p.errors, { title, reason }].slice(-20) : p.errors,
       }));
+    };
+
+    /** Stops the run without consuming the queue. Whatever is unprocessed stays
+     *  queued so Resume picks up exactly where this left off. Used for quota
+     *  exhaustion, which previously discarded a recipe per failed attempt. */
+    const halt = (reason: string) => {
+      haltReason = reason;
+      controller.abort();
     };
 
     const worker = async () => {
@@ -187,13 +200,25 @@ export function useCollectionImport() {
             const err = e as ApiError;
             consecutiveOk = 0;
 
+            // Daily quota cannot be waited out inside this run. Stop cleanly and
+            // leave everything unprocessed in the queue.
+            if (err instanceof ApiError && err.dailyQuotaExhausted) {
+              halt(err.message);
+              return;
+            }
             if (err instanceof ApiError && err.status === 429) {
               delayRef.current = Math.min(MAX_DELAY_MS, delayRef.current * 1.8);
             }
             const canRetry = !(err instanceof ApiError) || err.retryable;
-            if (!canRetry || attempt >= MAX_ATTEMPTS) {
+            if (!canRetry) {
               finish(id, 'failed', label, err.message || 'Extraction failed');
               break;
+            }
+            if (attempt >= MAX_ATTEMPTS) {
+              // Out of attempts on a *temporary* error: keep it queued rather
+              // than discarding it, and stop so the user can retry later.
+              halt('Repeated temporary errors - the rest stayed in the queue. ' + (err.message || ''));
+              return;
             }
             try {
               await sleep(delayRef.current * attempt, controller.signal);
@@ -219,8 +244,14 @@ export function useCollectionImport() {
     }
 
     if (controller.signal.aborted) {
-      setProgress(p => ({ ...p, status: 'cancelled', currentTitle: null }));
       persist();
+      setProgress(p => ({
+        ...p,
+        status: haltReason ? 'paused' : 'cancelled',
+        currentTitle: null,
+        stopReason: haltReason,
+      }));
+      if (jobRef.current?.remaining.length) setResumable(jobRef.current);
     } else {
       setProgress(p => ({ ...p, status: 'finished', currentTitle: null }));
       jobRef.current!.remaining = [];
