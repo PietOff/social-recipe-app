@@ -286,6 +286,68 @@ class Recipe(typing_extensions.TypedDict):
 
 
 
+TIKTOK_SCOPES = ("webapp.reflow.video.detail", "webapp.video-detail")
+
+
+def tiktok_page_extract(url: str) -> dict:
+    """Pulls caption, thumbnail and ASR subtitles out of the TikTok page JSON.
+
+    yt-dlp is currently blocked by TikTok ("Video not available, status code 0"),
+    which meant subtitles were unreachable and only the caption was ever parsed.
+    The page HTML is still served normally and embeds `subtitleInfos` - an
+    auto-transcribed WebVTT of the spoken audio - so the narration can be read
+    directly, with no video download and no Whisper call.
+    """
+    out = {"desc": "", "thumbnail": "", "subtitles": ""}
+    try:
+        headers = {
+            "User-Agent": ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                           "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                           "Mobile/15E148 Safari/604.1"),
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        html_text = requests.get(url, headers=headers, timeout=15).text
+        m = re.search(
+            r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>',
+            html_text, re.DOTALL)
+        if not m:
+            return out
+        scope = json.loads(m.group(1)).get("__DEFAULT_SCOPE__", {})
+
+        item = {}
+        for key in TIKTOK_SCOPES:
+            item = scope.get(key, {}).get("itemInfo", {}).get("itemStruct", {}) or {}
+            if item:
+                break
+        if not item:
+            return out
+
+        out["desc"] = item.get("desc", "") or ""
+        video = item.get("video", {}) or {}
+        out["thumbnail"] = video.get("cover") or video.get("originCover") or ""
+
+        tracks = video.get("subtitleInfos") or []
+        english = [t for t in tracks
+                   if str(t.get("LanguageCodeName", "")).lower().startswith("en")]
+        for track in (english or tracks):
+            sub_url = track.get("Url")
+            if not sub_url or not is_safe_media_url(sub_url):
+                continue
+            try:
+                vtt = requests.get(sub_url, headers=headers, timeout=15)
+                if vtt.status_code == 200 and vtt.text.strip():
+                    out["subtitles"] = clean_vtt(vtt.text)
+                    logger.info(
+                        f"TikTok subtitles: {track.get('LanguageCodeName')} "
+                        f"{track.get('Source')} -> {len(out['subtitles'])} chars")
+                    break
+            except Exception as e_sub:
+                logger.warning(f"Subtitle fetch failed: {e_sub}")
+    except Exception as e:
+        logger.warning(f"TikTok page extraction failed: {e}")
+    return out
+
+
 def resolve_redirects(url: str) -> str:
     """
     Expands short URLs (like vm.tiktok.com) to their full canonical form.
@@ -328,10 +390,20 @@ def get_video_data(url: str, extract_audio: bool = False):
         except Exception as e_oe:
             logger.warning(f"TikTok oEmbed failed: {e_oe}")
     
-    # TikTok fast path: caption from oEmbed is usually rich enough for recipe parsing
-    if "tiktok.com" in url and tiktok_oembed_caption and len(tiktok_oembed_caption) > 150 and not extract_audio:
-        logger.info(f"TikTok oEmbed fast path ({len(tiktok_oembed_caption)} chars), skipping yt-dlp")
-        return f"Title: {tiktok_oembed_title}\nDescription: {tiktok_oembed_caption}", tiktok_oembed_thumbnail, None
+    # TikTok primary path: caption + ASR subtitles from the page HTML.
+    # yt-dlp is blocked by TikTok, so this is the only route to the narration.
+    if "tiktok.com" in url and not extract_audio:
+        page = tiktok_page_extract(url)
+        caption = page["desc"] if len(page["desc"]) > len(tiktok_oembed_caption) else tiktok_oembed_caption
+        thumb = page["thumbnail"] or tiktok_oembed_thumbnail
+        if caption or page["subtitles"]:
+            title = (tiktok_oembed_title or (caption.split("\n")[0][:80] if caption else "")) or "TikTok video"
+            combined = f"Title: {title}\nDescription: {caption}"
+            if page["subtitles"]:
+                combined += f"\n\n[SUBTITLES/CAPTIONS - spoken narration]:\n{page['subtitles']}"
+            logger.info(f"TikTok page path: caption={len(caption)} chars, "
+                        f"subtitles={len(page['subtitles'])} chars")
+            return combined, thumb, None
 
     # 1. Base options for metadata
     ydl_opts = {
@@ -508,14 +580,23 @@ def get_video_data(url: str, extract_audio: bool = False):
             for file_path in Path(temp_dir).glob(f"{video_id}*.vtt"):
                 try:
                     with open(file_path, "r", encoding="utf-8") as f:
-                        subtitle_content += f.read() + "\n"
+                        subtitle_content += clean_vtt(f.read()) + "\n"
                     # Cleanup subtitle file
                     os.remove(file_path)
                 except Exception as e:
                     logger.warning(f"Could not read subtitle file {file_path}: {e}")
-            
-            if subtitle_content:
-                combined_text += f"\n\n[SUBTITLES/CAPTIONS]:\n{subtitle_content}"
+
+            if subtitle_content.strip():
+                logger.info(f"Subtitles found: {len(subtitle_content)} chars")
+                combined_text += f"\n\n[SUBTITLES/CAPTIONS]:\n{subtitle_content.strip()}"
+
+            # yt-dlp's description is sometimes truncated where oEmbed's is not,
+            # so keep whichever caption is longer rather than discarding one.
+            if tiktok_oembed_caption and len(tiktok_oembed_caption) > len(description or ""):
+                combined_text = combined_text.replace(
+                    f"Description: {description}", f"Description: {tiktok_oembed_caption}", 1)
+            if not thumbnail and tiktok_oembed_thumbnail:
+                thumbnail = tiktok_oembed_thumbnail
 
             return combined_text, thumbnail, audio_path
         except Exception as e:
@@ -838,6 +919,50 @@ def analyze_visuals_with_gemini(frames: List[str], api_key: str) -> str:
 
 # --- Endpoints ---
 
+QTY_RE = re.compile(
+    r"\b\d+(?:[.,]\d+)?\s*(?:g|gr|grams?|kg|ml|l|lit(?:er|re)s?|tsps?|teaspoons?|tbsps?|"
+    r"tablespoons?|cups?|oz|ounces?|lbs?|pounds?|cloves?|slices?|pieces?|cans?|eggs?)\b",
+    re.I,
+)
+
+
+def looks_like_recipe(text: str) -> bool:
+    """Cheap check for whether text plausibly already contains a recipe.
+
+    Used only to decide whether the expensive enrichment steps are worth
+    running - never to decide that extraction succeeded.
+    """
+    if not text:
+        return False
+    if len(QTY_RE.findall(text)) >= 3:
+        return True
+    lowered = text.lower()
+    return ("ingredient" in lowered and ("\n-" in text or "\n•" in text or "\n*" in text))
+
+
+def recipe_has_content(recipe: dict) -> bool:
+    """A parse only counts as successful if it actually yielded a recipe."""
+    return bool(recipe) and bool(recipe.get("ingredients")) and bool(recipe.get("instructions"))
+
+
+def clean_vtt(vtt: str) -> str:
+    """Strips WEBVTT headers, cue numbers, timestamps and repeated lines.
+
+    Raw VTT is mostly timestamps and duplicated rolling captions; cleaning it
+    improves parsing and cuts the token cost roughly in half.
+    """
+    lines = []
+    for line in vtt.splitlines():
+        line = line.strip()
+        if (not line or line.startswith("WEBVTT") or line.startswith("Kind:")
+                or line.startswith("Language:") or "-->" in line or line.isdigit()):
+            continue
+        line = re.sub(r"<[^>]+>", "", line).strip()
+        if line and (not lines or lines[-1] != line):
+            lines.append(line)
+    return "\n".join(lines)
+
+
 def is_thin_content(raw_text: str) -> bool:
     """Returns True if the extracted text is too sparse to reliably parse a recipe from."""
     return (
@@ -975,90 +1100,98 @@ def extract_recipe(request: ExtractRequest, _rl: None = Depends(rate_limit)):
     # Validate the URL before anything else, so a bad link reports a bad link.
     safe_url = assert_supported_url(request.url)
 
-    gemini_api_key = os.getenv("GEMINI_API_KEY")
-    groq_api_key = os.getenv("GROQ_API_KEY")
-
-    if not (gemini_api_key or groq_api_key):
+    if not (os.getenv("GEMINI_API_KEY") or os.getenv("GROQ_API_KEY")):
         raise HTTPException(status_code=503, detail="No LLM provider configured on the server.")
+    groq_api_key = os.getenv("GROQ_API_KEY")
     if not groq_api_key:
         logger.warning("Groq API key not found. Audio transcription will not work.")
 
-    # --- STEP 1: Fast pass — metadata + subtitles only (no audio download) ---
-    logger.info(f"Step 1: Fast metadata extraction for {safe_url}")
-    raw_text, thumbnail_url, _ = get_video_data(safe_url, extract_audio=False)
+    vid = video_id_from_url(safe_url)
 
-    # --- STEP 2: If content is rich enough, go straight to LLM ---
-    if not is_thin_content(raw_text):
-        logger.info(f"Content is rich ({len(raw_text)} chars), skipping audio download")
-        recipe_data = parse_with_llm(raw_text, gemini_api_key)
-        vid = video_id_from_url(safe_url)
-        recipe_data['video_id'] = vid
-        recipe_data['source_url'] = safe_url
-        recipe_data['image_url'] = rehost_thumbnail(thumbnail_url, vid or safe_url)
+    def finalize(recipe_data: dict, thumbnail_url, source: str):
+        recipe_data["video_id"] = vid
+        recipe_data["source_url"] = safe_url
+        recipe_data["image_url"] = rehost_thumbnail(thumbnail_url, vid or safe_url)
+        logger.info(f"Extraction succeeded via {source} for {safe_url}")
         return recipe_data
 
-    # --- STEP 3: Thin content — try audio download + Whisper transcription ---
-    logger.info("Content thin, attempting audio download + transcription...")
+    # --- STAGE 1: caption + subtitles (no audio download) ---
+    raw_text, thumbnail_url, _ = get_video_data(safe_url, extract_audio=False)
+    recipe_data = parse_with_llm(raw_text, "")
+    if recipe_has_content(recipe_data):
+        return finalize(recipe_data, thumbnail_url, "caption/subtitles")
+
+    # The caption alone had no recipe in it. Previously the pipeline stopped
+    # here whenever the text merely *looked* long enough, so audio and video
+    # were never consulted. Escalation is now driven by the parse result.
+    logger.info(f"No recipe from caption/subtitles for {safe_url}; escalating to audio")
+
+    # --- STAGE 2: audio transcript via Whisper ---
+    transcript = ""
     try:
         _, _, audio_path = get_video_data(safe_url, extract_audio=True)
         if audio_path and groq_api_key:
-            transcript = transcribe_audio(audio_path, groq_api_key)
-            if transcript:
-                raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{transcript}"
+            transcript = transcribe_audio(audio_path, groq_api_key) or ""
     except Exception as e:
         logger.warning(f"Audio extraction failed: {e}")
 
-    # --- STEP 4: Still thin — try direct video download + vision + audio ---
-    if is_thin_content(raw_text):
-        logger.info("Still thin after audio attempt, trying vision fallback...")
-        # Each request gets its own temp directory. The previous fixed filenames
-        # (temp_vision_vid.mp4) meant concurrent requests overwrote each other,
-        # and nothing was ever deleted.
-        work_dir = tempfile.mkdtemp(prefix="vision_")
-        try:
-            headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1"}
-            html_resp = requests.get(safe_url, headers=headers, timeout=10)
-            if html_resp.status_code == 200:
-                direct_url = extract_direct_video_url(safe_url, html_resp.text)
-                if direct_url and is_safe_media_url(direct_url):
-                    temp_vid_path = os.path.join(work_dir, "video.mp4")
-                    vid_resp = requests.get(direct_url, stream=True, timeout=30)
-                    downloaded = 0
-                    with open(temp_vid_path, 'wb') as f:
-                        for chunk in vid_resp.iter_content(chunk_size=8192):
-                            downloaded += len(chunk)
-                            if downloaded > MAX_VIDEO_BYTES:
-                                raise Exception("Video exceeds size limit; aborting vision fallback.")
-                            f.write(chunk)
+    if transcript.strip():
+        raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{transcript.strip()}"
+        recipe_data = parse_with_llm(raw_text, "")
+        if recipe_has_content(recipe_data):
+            return finalize(recipe_data, thumbnail_url, "audio transcript")
+        logger.info("Audio transcript still yielded no recipe; escalating to vision")
 
-                    # Audio via ffmpeg
+    # --- STAGE 3: direct video download -> frames + audio -> vision ---
+    added_visual = False
+    work_dir = tempfile.mkdtemp(prefix="vision_")
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1"}
+        html_resp = requests.get(safe_url, headers=headers, timeout=10)
+        if html_resp.status_code == 200:
+            direct_url = extract_direct_video_url(safe_url, html_resp.text)
+            if direct_url and is_safe_media_url(direct_url):
+                temp_vid_path = os.path.join(work_dir, "video.mp4")
+                vid_resp = requests.get(direct_url, stream=True, timeout=30)
+                downloaded = 0
+                with open(temp_vid_path, "wb") as f:
+                    for chunk in vid_resp.iter_content(chunk_size=8192):
+                        downloaded += len(chunk)
+                        if downloaded > MAX_VIDEO_BYTES:
+                            raise Exception("Video exceeds size limit; aborting vision fallback.")
+                        f.write(chunk)
+
+                # Audio straight from the downloaded file, in case stage 2's
+                # yt-dlp audio download was the part that failed.
+                if groq_api_key and not transcript.strip():
                     temp_audio_path = os.path.join(work_dir, "audio.mp3")
                     subprocess.run(
                         ["ffmpeg", "-i", temp_vid_path, "-vn", "-acodec", "libmp3lame", "-y", temp_audio_path],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120,
                     )
-                    if groq_api_key and os.path.exists(temp_audio_path):
-                        transcript = transcribe_audio(temp_audio_path, groq_api_key)
-                        if transcript:
-                            raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{transcript}"
+                    if os.path.exists(temp_audio_path):
+                        t2 = transcribe_audio(temp_audio_path, groq_api_key)
+                        if t2 and t2.strip():
+                            raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{t2.strip()}"
+                            added_visual = True
 
-                    # Vision frames
-                    frames = extract_frames(temp_vid_path)
-                    visual_desc = analyze_visuals_with_gemini(frames, gemini_api_key)
-                    if visual_desc:
-                        raw_text += visual_desc
-        except Exception as e_vision:
-            logger.warning(f"Vision fallback failed: {e_vision}")
-        finally:
-            shutil.rmtree(work_dir, ignore_errors=True)
+                frames = extract_frames(temp_vid_path)
+                visual_desc = analyze_visuals_with_gemini(frames, os.getenv("GEMINI_API_KEY") or "")
+                if visual_desc and visual_desc.strip():
+                    raw_text += visual_desc
+                    added_visual = True
+    except Exception as e_vision:
+        logger.warning(f"Vision fallback failed: {e_vision}")
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
-    # --- STEP 5: Parse whatever we have with LLM ---
-    recipe_data = parse_with_llm(raw_text, gemini_api_key)
-    vid = video_id_from_url(safe_url)
-    recipe_data['video_id'] = vid
-    recipe_data['source_url'] = safe_url
-    recipe_data['image_url'] = rehost_thumbnail(thumbnail_url, vid or safe_url)
-    return recipe_data
+    if added_visual:
+        recipe_data = parse_with_llm(raw_text, "")
+
+    if not recipe_has_content(recipe_data):
+        logger.info(f"No recipe could be extracted from {safe_url} after all stages")
+    return finalize(recipe_data, thumbnail_url, "vision/final")
+
 
 class BackgroundImportRequest(BaseModel):
     urls: List[str]
