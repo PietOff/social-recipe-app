@@ -1,8 +1,6 @@
 'use client';
 
 import React, { useState } from 'react';
-import RecipeCard from '../components/RecipeCard';
-import { CategoryAccordion } from '../components/CategoryAccordion';
 import { Recipe } from '../types';
 import styles from './page.module.css';
 import { auth, db } from '../firebase';
@@ -12,18 +10,23 @@ import {
   signOut, 
   onAuthStateChanged 
 } from 'firebase/auth';
-import { 
-  collection, 
-  doc, 
-  addDoc, 
-  getDocs, 
-  deleteDoc, 
-  query, 
-  where, 
-  setDoc 
+import {
+  collection,
+  doc,
+  getDocs,
+  deleteDoc,
+  query,
+  where,
+  setDoc
 } from 'firebase/firestore';
-
-const API_URL = '/api';
+import { apiPost } from '../lib/api';
+import {
+  saveRecipeToCloud,
+  recipeKey,
+  isSameRecipe,
+  videoIdFromUrl,
+} from '../lib/recipes';
+import { useCollectionImport, CollectionVideo } from '../hooks/useCollectionImport';
 
 interface User {
   id: string;
@@ -41,14 +44,12 @@ function HomeContent() {
   const [savedRecipes, setSavedRecipes] = useState<Recipe[]>([]);
 
   // Collection import state
-  type CollectionVideo = { url: string; title?: string; thumbnail?: string; video_id?: string };
   const [collectionVideos, setCollectionVideos] = useState<CollectionVideo[] | null>(null);
   const [collectionTitle, setCollectionTitle] = useState<string | null>(null);
   const [classifying, setClassifying] = useState(false);
   const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(new Set());
-  const [importProgress, setImportProgress] = useState<{ current: number; total: number } | null>(null);
-  const [importCancelled, setImportCancelled] = useState(false);
   const [importedVideoIds, setImportedVideoIds] = useState<Set<string>>(new Set());
+  const { progress: importProgress, start: startImport, cancel: cancelImport, resume: resumeImport, dismiss: dismissImport, resumable } = useCollectionImport();
   const cookbookScrollY = React.useRef(0);
   const [cookbookLoading, setCookbookLoading] = useState(false);
   const [cookbookError, setCookbookError] = useState<string | null>(null);
@@ -167,7 +168,9 @@ function HomeContent() {
       localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(recipes));
 
       // Hydrate imported IDs from the cloud to prevent duplicates across devices
-      const cloudIds = new Set(recipes.map(r => r.video_id || r.source_url).filter(Boolean) as string[]);
+      const cloudIds = new Set(
+        recipes.map(r => r.video_id || videoIdFromUrl(r.source_url) || r.source_url).filter(Boolean) as string[]
+      );
       setImportedVideoIds(prev => new Set([...prev, ...cloudIds]));
     } catch (e: any) {
       console.error('Failed to fetch cloud recipes', e);
@@ -204,21 +207,9 @@ function HomeContent() {
       const localRecipes = localStorage.getItem('chefSocial_cookbook');
       if (localRecipes) {
         try {
-          const recipes = JSON.parse(localRecipes);
+          const recipes: Recipe[] = JSON.parse(localRecipes);
           for (const r of recipes) {
-            await addDoc(collection(db, 'recipes'), {
-              user_id: firebaseUser.uid,
-              title: r.title,
-              description: r.description || '',
-              ingredients: r.ingredients || [],
-              instructions: r.instructions || [],
-              tags: r.tags || [],
-              image_url: r.image_url || null,
-              prep_time: r.prep_time || null,
-              cook_time: r.cook_time || null,
-              servings: r.servings || null,
-              created_at: Date.now()
-            });
+            await saveRecipeToCloud(firebaseUser.uid, r);
           }
           localStorage.removeItem('chefSocial_cookbook'); // Clear local after migration
         } catch (e) {
@@ -274,18 +265,18 @@ function HomeContent() {
   };
 
   const saveRecipe = async (recipeToSave: Recipe) => {
-    const isAlreadySaved = savedRecipes.some(r => r.title === recipeToSave.title);
+    // Identity is video_id / source_url / doc id - NOT the title. Keying on the
+    // title meant two recipes called "Chicken Curry" clobbered each other.
+    const isAlreadySaved = savedRecipes.some(r => isSameRecipe(r, recipeToSave));
 
     if (isAlreadySaved) {
-      // Remove recipe
-      const recipeToDelete = savedRecipes.find(r => r.title === recipeToSave.title);
-      const newSaved = savedRecipes.filter(r => r.title !== recipeToSave.title);
+      const recipeToDelete = savedRecipes.find(r => isSameRecipe(r, recipeToSave));
+      const newSaved = savedRecipes.filter(r => !isSameRecipe(r, recipeToSave));
       setSavedRecipes(newSaved);
 
       if (!user) {
         localStorage.setItem('chefSocial_cookbook', JSON.stringify(newSaved));
       } else if (recipeToDelete?.id) {
-        // Cloud delete from Firestore
         try {
           await deleteDoc(doc(db, 'recipes', recipeToDelete.id));
           localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(newSaved));
@@ -300,25 +291,14 @@ function HomeContent() {
 
       if (user) {
         try {
-          const docRef = await addDoc(collection(db, 'recipes'), {
-            user_id: user.id,
-            title: recipeToSave.title,
-            description: recipeToSave.description || '',
-            ingredients: recipeToSave.ingredients || [],
-            instructions: recipeToSave.instructions || [],
-            tags: recipeToSave.tags || [],
-            image_url: recipeToSave.image_url || null,
-            prep_time: recipeToSave.prep_time || null,
-            cook_time: recipeToSave.cook_time || null,
-            servings: recipeToSave.servings || null,
-            source_url: recipeToSave.source_url || null,
-            video_id: recipeToSave.video_id || null,
-            created_at: Date.now()
+          const savedRecipe = await saveRecipeToCloud(user.id, recipeToSave);
+          setSavedRecipes(prev => {
+            const next = [savedRecipe, ...prev.filter(r => !isSameRecipe(r, recipeToSave))];
+            // Write the cache from the value we just computed. The old code
+            // serialised the pre-update `savedRecipes` closure, so the cache drifted.
+            localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(next));
+            return next;
           });
-          
-          const savedRecipe = { ...recipeToSave, id: docRef.id };
-          setSavedRecipes(prev => [savedRecipe, ...prev.filter(r => r.title !== recipeToSave.title)]);
-          localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify([savedRecipe, ...savedRecipes]));
         } catch (e) {
           console.error('Cloud save failed, kept locally', e);
           localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(optimistic));
@@ -329,85 +309,46 @@ function HomeContent() {
     }
   };
 
-  const extractSingleRecipe = async (videoUrl: string): Promise<Recipe | null> => {
-    const res = await fetch(`${API_URL}/extract-recipe`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: videoUrl.trim() }),
-    });
-    if (!res.ok) {
-      const errData = await res.json();
-      throw new Error(errData.detail || 'Extraction failed');
-    }
-    return res.json();
-  };
+  const extractSingleRecipe = async (videoUrl: string): Promise<Recipe> =>
+    apiPost<Recipe>('/extract-recipe', { url: videoUrl.trim() });
 
-  const saveRecipeDirect = async (recipeToSave: Recipe) => {
+  /** Merges a recipe saved by the background import into local state + cache. */
+  const mergeImportedRecipe = React.useCallback((saved: Recipe) => {
     setSavedRecipes(prev => {
-      if (prev.some(r => r.title === recipeToSave.title)) return prev;
-      const updated = [recipeToSave, ...prev];
-      if (!user) localStorage.setItem('chefSocial_cookbook', JSON.stringify(updated));
-      return updated;
-    });
-
-    if (user) {
+      const next = [saved, ...prev.filter(r => !isSameRecipe(r, saved))];
       try {
-        const docRef = await addDoc(collection(db, 'recipes'), {
-          user_id: user.id,
-          title: recipeToSave.title,
-          description: recipeToSave.description || '',
-          ingredients: recipeToSave.ingredients || [],
-          instructions: recipeToSave.instructions || [],
-          tags: recipeToSave.tags || [],
-          image_url: recipeToSave.image_url || null,
-          prep_time: recipeToSave.prep_time || null,
-          cook_time: recipeToSave.cook_time || null,
-          servings: recipeToSave.servings || null,
-          source_url: recipeToSave.source_url || null,
-          video_id: recipeToSave.video_id || null,
-          created_at: Date.now()
-        });
-        const saved = { ...recipeToSave, id: docRef.id };
-        setSavedRecipes(prev => [saved, ...prev.filter(r => r.title !== recipeToSave.title)]);
-      } catch (e) {
-        console.warn('Cloud save failed for recipe, kept locally', e);
-      }
+        localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(next));
+      } catch { /* quota */ }
+      return next;
+    });
+    const key = saved.video_id || videoIdFromUrl(saved.source_url) || saved.source_url;
+    if (key) {
+      setImportedVideoIds(prev => {
+        const next = new Set(prev).add(key);
+        try {
+          localStorage.setItem('chefSocial_imported_video_ids', JSON.stringify([...next]));
+        } catch { /* quota */ }
+        return next;
+      });
     }
-  };
+  }, []);
 
-  const handleImportCollection = async () => {
+  const handleImportCollection = () => {
     if (!collectionVideos || !user) return;
     const toImport = collectionVideos.filter(v => selectedVideoIds.has(v.video_id ?? v.url));
     if (toImport.length === 0) return;
 
-    setImportProgress({ current: 0, total: toImport.length });
-
-    try {
-      const res = await fetch(`${API_URL}/import-collection-background`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          urls: toImport.map(v => v.url),
-          user_id: user.id
-        })
-      });
-
-      if (!res.ok) {
-        throw new Error('Failed to start background import');
-      }
-      
-      alert("Background import started successfully! You can safely close the app or switch tabs. Recipes will slowly appear in your cookbook over the next few minutes.");
-    } catch (err) {
-      console.error(err);
-      alert("Failed to start background import. Please try again later.");
-    }
-
-    setImportProgress(null);
     setCollectionVideos(null);
     setCollectionTitle(null);
     setSelectedVideoIds(new Set());
     setView('cookbook');
+
+    // The loop runs here in the tab rather than as a server background task.
+    // Recipes stream into the cookbook as they finish.
+    startImport(user.id, toImport, mergeImportedRecipe);
   };
+
+  const handleResumeImport = () => resumeImport(mergeImportedRecipe);
 
   const handleExtract = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -425,39 +366,52 @@ function HomeContent() {
     setCollectionTitle(null);
 
     try {
-      const collectionRes = await fetch(`${API_URL}/extract-collection`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim() }),
-      });
+      let collectionData: { is_collection?: boolean; count?: number; videos?: CollectionVideo[]; collection_title?: string } | null = null;
+      try {
+        collectionData = await apiPost('/extract-collection', { url: url.trim() });
+      } catch {
+        collectionData = null; // not a collection - fall through to single extraction
+      }
 
-      if (collectionRes.ok) {
-        const collectionData = await collectionRes.json();
-        if (collectionData.is_collection && collectionData.count > 0) {
-          const videos: CollectionVideo[] = collectionData.videos;
+      {
+        if (collectionData && collectionData.is_collection && (collectionData.count ?? 0) > 0) {
+          const videos: CollectionVideo[] = collectionData.videos ?? [];
           setCollectionVideos(videos);
           setCollectionTitle(collectionData.collection_title || 'TikTok Collection');
           setLoading(false);
 
           setClassifying(true);
+          const selectAll = () => new Set(videos.map(v => v.video_id ?? v.url));
           try {
-            const classifyRes = await fetch(`${API_URL}/classify-recipes`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ videos: videos.map(v => ({ video_id: v.video_id, title: v.title })) }),
+            // Chunked: asking one LLM call to emit hundreds of JSON objects
+            // risks truncation, which silently marked every video as a recipe.
+            const CHUNK = 50;
+            const chunks: CollectionVideo[][] = [];
+            for (let i = 0; i < videos.length; i += CHUNK) chunks.push(videos.slice(i, i + CHUNK));
+
+            const settled = await Promise.allSettled(
+              chunks.map(chunk =>
+                apiPost<{ results: { video_id: string; is_recipe: boolean }[] }>(
+                  '/classify-recipes',
+                  { videos: chunk.map(v => ({ video_id: v.video_id, title: v.title })) },
+                )
+              )
+            );
+
+            const recipeIds = new Set<string>();
+            settled.forEach((outcome, i) => {
+              if (outcome.status === 'fulfilled') {
+                outcome.value.results
+                  .filter(r => r.is_recipe)
+                  .forEach(r => recipeIds.add(r.video_id));
+              } else {
+                // Don't silently drop a chunk we couldn't classify - select it all.
+                chunks[i].forEach(v => recipeIds.add(v.video_id ?? v.url));
+              }
             });
-            if (classifyRes.ok) {
-              const { results } = await classifyRes.json();
-              const recipeIds = new Set<string>(
-                results.filter((r: { video_id: string; is_recipe: boolean }) => r.is_recipe)
-                       .map((r: { video_id: string; is_recipe: boolean }) => r.video_id)
-              );
-              setSelectedVideoIds(recipeIds.size > 0 ? recipeIds : new Set(videos.map(v => v.video_id ?? v.url)));
-            } else {
-              setSelectedVideoIds(new Set(videos.map(v => v.video_id ?? v.url)));
-            }
+            setSelectedVideoIds(recipeIds.size > 0 ? recipeIds : selectAll());
           } catch {
-            setSelectedVideoIds(new Set(videos.map(v => v.video_id ?? v.url)));
+            setSelectedVideoIds(selectAll());
           } finally {
             setClassifying(false);
           }
@@ -477,7 +431,7 @@ function HomeContent() {
   const handleDelete = async () => {
     if (!recipe) return;
     if (confirm("Are you sure you want to delete this recipe?")) {
-      const updated = savedRecipes.filter(r => r.title !== recipe.title);
+      const updated = savedRecipes.filter(r => !isSameRecipe(r, recipe));
       setSavedRecipes(updated);
 
       if (user) {
@@ -530,12 +484,16 @@ function HomeContent() {
     if (!user) { setError('Sign in to share recipes.'); return; }
     setShareLoading(true);
     try {
-      const shareToken = Math.random().toString(36).substring(2, 18);
-      
+      // Math.random() is not cryptographically secure - its PRNG state is
+      // recoverable from a few outputs, which made share links guessable.
+      const shareToken = crypto.randomUUID().replace(/-/g, '');
+
+      const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
       await setDoc(doc(db, 'shared_links', shareToken), {
         recipes: recipesToShare,
         created_by: user.id,
-        created_at: Date.now()
+        created_at: Date.now(),
+        expires_at: Date.now() + THIRTY_DAYS
       });
 
       const link = `${window.location.origin}/share/${shareToken}`;
@@ -774,7 +732,7 @@ function HomeContent() {
               )}
 
               {/* Collection detected UI */}
-              {collectionVideos && !importProgress && (
+              {collectionVideos && importProgress.status !== 'running' && (
                 <div className={styles.recipeCard}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                     <h2 style={{ margin: 0 }}>📚 {collectionTitle}</h2>
@@ -836,29 +794,90 @@ function HomeContent() {
                 </div>
               )}
 
-              {/* Collection import progress */}
-              {importProgress && (
+              {/* Resume banner for an import interrupted by a refresh/close */}
+              {resumable && importProgress.status === 'idle' && (
                 <div className={styles.recipeCard} style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '2rem', marginBottom: '0.75rem' }}>⏳</div>
-                  <h3 style={{ marginBottom: '0.5rem' }}>
-                    Importing recipes... {importProgress.current}/{importProgress.total}
-                  </h3>
-                  <div style={{ background: 'rgba(255,255,255,0.1)', borderRadius: '8px', overflow: 'hidden', margin: '1rem 0' }}>
-                    <div style={{
-                      height: '8px',
-                      background: 'var(--primary-gradient)',
-                      width: `${(importProgress.current / importProgress.total) * 100}%`,
-                      transition: 'width 0.3s ease',
-                    }} />
-                  </div>
-                  <p style={{ opacity: 0.6, fontSize: '0.85rem', marginBottom: '1rem' }}>
-                    Recipes are being saved to your cookbook automatically.
+                  <h3 style={{ marginBottom: '0.5rem' }}>Unfinished import</h3>
+                  <p style={{ opacity: 0.7, fontSize: '0.9rem', marginBottom: '1rem' }}>
+                    {resumable.remaining.length} recipe{resumable.remaining.length !== 1 ? 's' : ''} left from your last import.
                   </p>
-                  <button onClick={() => setImportCancelled(true)} className={styles.iconButton} style={{ opacity: 0.6 }}>
-                    Cancel import
-                  </button>
+                  <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+                    <button onClick={handleResumeImport} className={styles.button}>Resume</button>
+                    <button onClick={dismissImport} className={styles.iconButton} style={{ opacity: 0.6 }}>Discard</button>
+                  </div>
                 </div>
               )}
+
+              {/* Collection import progress */}
+              {importProgress.status !== 'idle' && importProgress.total > 0 && (() => {
+                const settled = importProgress.done + importProgress.failed + importProgress.skipped;
+                const pct = Math.round((settled / importProgress.total) * 100);
+                const running = importProgress.status === 'running';
+                return (
+                  <div className={styles.recipeCard} style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: '2rem', marginBottom: '0.75rem' }}>
+                      {running ? '⏳' : importProgress.status === 'finished' ? '✅' : '⏸️'}
+                    </div>
+                    <h3 style={{ marginBottom: '0.5rem' }}>
+                      {running
+                        ? `Importing recipes... ${settled}/${importProgress.total}`
+                        : importProgress.status === 'finished'
+                          ? 'Import complete'
+                          : 'Import stopped'}
+                    </h3>
+
+                    <div style={{ background: 'rgba(255,255,255,0.1)', borderRadius: '8px', overflow: 'hidden', margin: '1rem 0' }}>
+                      <div style={{
+                        height: '8px',
+                        background: 'var(--primary-gradient)',
+                        width: `${pct}%`,
+                        transition: 'width 0.3s ease',
+                      }} />
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', fontSize: '0.85rem', opacity: 0.75, marginBottom: '0.75rem' }}>
+                      <span>✅ {importProgress.done} saved</span>
+                      {importProgress.skipped > 0 && <span>⏭️ {importProgress.skipped} already had</span>}
+                      {importProgress.failed > 0 && <span>⚠️ {importProgress.failed} failed</span>}
+                    </div>
+
+                    {running && (
+                      <>
+                        <p style={{ opacity: 0.6, fontSize: '0.82rem', marginBottom: '0.25rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {importProgress.currentTitle ?? 'Starting...'}
+                        </p>
+                        <p style={{ opacity: 0.5, fontSize: '0.78rem', marginBottom: '1rem' }}>
+                          Keep this tab open. Recipes appear in your cookbook as they finish.
+                        </p>
+                      </>
+                    )}
+
+                    {importProgress.errors.length > 0 && (
+                      <details style={{ textAlign: 'left', margin: '0 0 1rem', fontSize: '0.8rem', opacity: 0.7 }}>
+                        <summary style={{ cursor: 'pointer' }}>Show {importProgress.errors.length} problem{importProgress.errors.length !== 1 ? 's' : ''}</summary>
+                        <ul style={{ margin: '0.5rem 0 0', paddingLeft: '1.1rem' }}>
+                          {importProgress.errors.map((e, i) => (
+                            <li key={i}>{e.title} — {e.reason}</li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+
+                    {running ? (
+                      <button onClick={cancelImport} className={styles.iconButton} style={{ opacity: 0.6 }}>
+                        Cancel import
+                      </button>
+                    ) : (
+                      <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+                        {importProgress.status === 'cancelled' && resumable && (
+                          <button onClick={handleResumeImport} className={styles.button}>Resume</button>
+                        )}
+                        <button onClick={dismissImport} className={styles.iconButton} style={{ opacity: 0.6 }}>Dismiss</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {recipe && (
                 <div className={styles.recipeCard}>
@@ -923,8 +942,8 @@ function HomeContent() {
                     </div>
                   </div>
 
-                  <button onClick={() => saveRecipe(recipe)} disabled={savedRecipes.some(r => r.title === recipe.title)} className={styles.saveButton}>
-                    {savedRecipes.some(r => r.title === recipe.title) ? 'Saved to Cookbook!' : 'Save to Cookbook'}
+                  <button onClick={() => saveRecipe(recipe)} disabled={savedRecipes.some(r => isSameRecipe(r, recipe))} className={styles.saveButton}>
+                    {savedRecipes.some(r => isSameRecipe(r, recipe)) ? 'Saved to Cookbook!' : 'Save to Cookbook'}
                   </button>
                 </div>
               )}
@@ -954,14 +973,14 @@ function HomeContent() {
                   {selectMode && (
                     <button
                       onClick={() => {
-                        const allIds = new Set(filteredRecipes.map(r => r.id || r.title));
-                        const allSelected = filteredRecipes.every(r => bulkSelected.has(r.id || r.title));
+                        const allIds = new Set(filteredRecipes.map(recipeKey));
+                        const allSelected = filteredRecipes.every(r => bulkSelected.has(recipeKey(r)));
                         setBulkSelected(allSelected ? new Set() : allIds);
                       }}
                       className={styles.button}
                       style={{ whiteSpace: 'nowrap', padding: '0.5rem 0.9rem', fontSize: '0.85rem', background: 'rgba(255,255,255,0.1)' }}
                     >
-                      {filteredRecipes.every(r => bulkSelected.has(r.id || r.title)) ? 'Deselect All' : 'Select All'}
+                      {filteredRecipes.every(r => bulkSelected.has(recipeKey(r))) ? 'Deselect All' : 'Select All'}
                     </button>
                   )}
                 </div>
@@ -1007,16 +1026,16 @@ function HomeContent() {
                     Loading your recipes...
                   </p>
                 ) : filteredRecipes.map((r, idx) => {
-                  const recipeKey = r.id || r.title;
-                  const isSelected = bulkSelected.has(recipeKey);
+                  const key = recipeKey(r);
+                  const isSelected = bulkSelected.has(key);
                   return (
                     <div
-                      key={idx}
+                      key={key}
                       className={styles.cookbookItem}
                       style={{ outline: isSelected ? '2px solid #FF6B35' : undefined, position: 'relative' }}
                       onClick={() => {
                         if (selectMode) {
-                          setBulkSelected(prev => { const n = new Set(prev); isSelected ? n.delete(recipeKey) : n.add(recipeKey); return n; });
+                          setBulkSelected(prev => { const n = new Set(prev); isSelected ? n.delete(key) : n.add(key); return n; });
                         } else {
                           cookbookScrollY.current = window.scrollY; setRecipe(r); setView('details'); window.scrollTo({ top: 0, behavior: 'smooth' });
                         }
@@ -1072,7 +1091,7 @@ function HomeContent() {
                   <span style={{ opacity: 0.8 }}>{bulkSelected.size} selected</span>
                   <button
                     onClick={() => {
-                      const recipes = savedRecipes.filter(r => bulkSelected.has(r.id || r.title));
+                      const recipes = savedRecipes.filter(r => bulkSelected.has(recipeKey(r)));
                       handleShare(recipes).then(() => { setSelectMode(false); setBulkSelected(new Set()); });
                     }}
                     className={styles.button}
