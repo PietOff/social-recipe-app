@@ -1,0 +1,52 @@
+rules_version = '2';
+
+// Deploy with:  firebase deploy --only firestore:rules
+//
+// Without these rules the `recipes` and `shared_links` collections are written
+// directly from the browser with no server-side check, so a project left in
+// test mode exposes every user's cookbook to the internet.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // A recipe belongs to exactly one user. Document IDs are deterministic
+    // ("{uid}_{videoId}"), so the owner is also encoded in the path.
+    match /recipes/{recipeId} {
+      allow read, delete: if signedIn() && request.auth.uid == resource.data.user_id;
+      allow create: if signedIn()
+                    && request.auth.uid == request.resource.data.user_id
+                    && recipeId.split('_')[0] == request.auth.uid
+                    && request.resource.data.title is string;
+      allow update: if signedIn()
+                    && request.auth.uid == resource.data.user_id
+                    && request.auth.uid == request.resource.data.user_id;
+    }
+
+    // Share links are deliberately world-readable - that is the feature - but
+    // only until they expire, and only the creator may make or revoke one.
+    match /shared_links/{token} {
+      allow read: if resource.data.expires_at == null
+                  || request.time.toMillis() < resource.data.expires_at;
+      allow create: if signedIn()
+                    && request.auth.uid == request.resource.data.created_by
+                    && request.resource.data.recipes is list
+                    && request.resource.data.recipes.size() <= 100;
+      allow update, delete: if signedIn() && request.auth.uid == resource.data.created_by;
+    }
+
+    // Import job status, written by the backend's Admin SDK (which bypasses
+    // rules); the client only ever reads its own.
+    match /import_jobs/{jobId} {
+      allow read: if signedIn() && request.auth.uid == resource.data.user_id;
+      allow write: if false;
+    }
+
+    // Deny anything not explicitly matched above.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
