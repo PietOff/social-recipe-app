@@ -44,6 +44,20 @@ export function isSameRecipe(a: Partial<Recipe>, b: Partial<Recipe>): boolean {
   return !!a.title && a.title === b.title;
 }
 
+/**
+ * Thumbnail source for a recipe.
+ *
+ * Stored `image_url` values point at signed TikTok CDN URLs that expire (old
+ * ones now return 403), so prefer the backend resolver whenever we know the
+ * video id. Falls back to the stored URL for recipes saved before `video_id`
+ * was recorded.
+ */
+export function thumbnailSrc(recipe: Partial<Recipe>): string | undefined {
+  const vid = recipe.video_id || videoIdFromUrl(recipe.source_url);
+  if (vid) return `/api/thumbnail?video_id=${encodeURIComponent(vid)}`;
+  return recipe.image_url || recipe.image || undefined;
+}
+
 export function toFirestoreDoc(uid: string, recipe: Recipe) {
   return {
     user_id: uid,

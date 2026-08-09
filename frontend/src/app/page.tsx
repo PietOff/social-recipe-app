@@ -25,6 +25,7 @@ import {
   recipeKey,
   isSameRecipe,
   videoIdFromUrl,
+  thumbnailSrc,
 } from '../lib/recipes';
 import { useCollectionImport, CollectionVideo } from '../hooks/useCollectionImport';
 
@@ -1027,6 +1028,7 @@ function HomeContent() {
                   </p>
                 ) : filteredRecipes.map((r, idx) => {
                   const key = recipeKey(r);
+                  const thumb = thumbnailSrc(r);
                   const isSelected = bulkSelected.has(key);
                   return (
                     <div
@@ -1047,9 +1049,9 @@ function HomeContent() {
                         </div>
                       )}
                       <div className={styles.cookbookImage}>
-                        {(r.image_url || r.image) ? (
+                        {thumb ? (
                           <img
-                            src={r.image_url || r.image}
+                            src={thumb}
                             alt={r.title}
                             referrerPolicy="no-referrer"
                             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
@@ -1060,7 +1062,7 @@ function HomeContent() {
                             }}
                           />
                         ) : null}
-                        <span style={{ fontSize: '2rem', display: (r.image_url || r.image) ? 'none' : 'block' }}>🍳</span>
+                        <span style={{ fontSize: '2rem', display: thumb ? 'none' : 'block' }}>🍳</span>
                       </div>
                       <div className={styles.cookbookContent}>
                         <h4>{r.title}</h4>
