@@ -15,7 +15,18 @@ service cloud.firestore {
     // A recipe belongs to exactly one user. Document IDs are deterministic
     // ("{uid}_{videoId}"), so the owner is also encoded in the path.
     match /recipes/{recipeId} {
-      allow read, delete: if signedIn() && request.auth.uid == resource.data.user_id;
+      // NOTE: `resource` is null when the document does not exist. A plain
+      // `request.auth.uid == resource.data.user_id` therefore DENIES an
+      // existence check on a not-yet-created recipe, which broke imports
+      // ("Missing or insufficient permissions"). Because IDs are
+      // "{uid}_{videoId}", the caller's ownership of a missing document can be
+      // decided from the path instead.
+      allow read: if signedIn() && (
+                    (resource != null && request.auth.uid == resource.data.user_id)
+                    || (resource == null && recipeId.split('_')[0] == request.auth.uid)
+                  );
+      allow delete: if signedIn() && resource != null
+                    && request.auth.uid == resource.data.user_id;
       allow create: if signedIn()
                     && request.auth.uid == request.resource.data.user_id
                     && recipeId.split('_')[0] == request.auth.uid
@@ -28,7 +39,10 @@ service cloud.firestore {
     // Share links are deliberately world-readable - that is the feature - but
     // only until they expire, and only the creator may make or revoke one.
     match /shared_links/{token} {
-      allow read: if resource.data.expires_at == null
+      // Null-tolerant so a missing token surfaces as "not found" rather than a
+      // confusing permissions error.
+      allow read: if resource == null
+                  || resource.data.expires_at == null
                   || request.time.toMillis() < resource.data.expires_at;
       allow create: if signedIn()
                     && request.auth.uid == request.resource.data.created_by
@@ -40,7 +54,8 @@ service cloud.firestore {
     // Import job status, written by the backend's Admin SDK (which bypasses
     // rules); the client only ever reads its own.
     match /import_jobs/{jobId} {
-      allow read: if signedIn() && request.auth.uid == resource.data.user_id;
+      allow read: if signedIn() && resource != null
+                  && request.auth.uid == resource.data.user_id;
       allow write: if false;
     }
 
