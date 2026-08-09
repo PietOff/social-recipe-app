@@ -1,9 +1,12 @@
-yt-dlp>=2025.01.12
-fastapi
-uvicorn
-python-dotenv
-google-genai
-typing-extensions
-requests
-groq
-firebase-admin
+# Pinned for reproducible builds. Previously unpinned, so a new yt-dlp or
+# google-genai release could break production with no code change.
+# Refresh deliberately with: pip install -U -r requirements.txt && pip freeze
+yt-dlp==2026.7.4
+fastapi==0.141.1
+uvicorn==0.52.1
+python-dotenv==1.2.2
+google-genai==2.17.0
+typing-extensions==4.15.0
+requests==2.34.2
+groq==1.6.0
+firebase-admin==7.5.0
