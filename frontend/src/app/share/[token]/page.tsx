@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { Recipe } from '../../../types';
 import { db, auth } from '../../../firebase';
 import { doc, getDoc } from 'firebase/firestore';
-import { saveRecipeToCloud } from '../../../lib/recipes';
+import { saveRecipeToCloud, thumbnailSrc } from '../../../lib/recipes';
 
 export default function SharePage({ params }: { params: Promise<{ token: string }> }) {
   // Next.js 16 makes route params a Promise; reading `params.token` directly is
@@ -95,8 +95,8 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: 680, margin: '0 auto' }}>
         {recipes.map((recipe, i) => (
           <div key={i} style={styles.recipeCard}>
-            {recipe.image_url && (
-              <img src={recipe.image_url} alt={recipe.title} referrerPolicy="no-referrer" style={styles.image} onError={e => (e.currentTarget.style.display = 'none')} />
+            {thumbnailSrc(recipe) && (
+              <img src={thumbnailSrc(recipe)} alt={recipe.title} referrerPolicy="no-referrer" style={styles.image} onError={e => (e.currentTarget.style.display = 'none')} />
             )}
             <div style={{ padding: '1.25rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
