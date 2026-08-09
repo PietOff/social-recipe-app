@@ -22,9 +22,15 @@ import time
 import asyncio
 from fastapi import BackgroundTasks
 import firebase_admin
-from firebase_admin import credentials, firestore, storage
+from firebase_admin import credentials, firestore, storage, auth as fb_auth
 import uuid
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
+import hashlib
+import ipaddress
+import shutil
+import threading
+from collections import defaultdict, deque
+from fastapi import Depends, Header, Request
 
 # Load env vars
 load_dotenv()
@@ -62,11 +68,148 @@ else:
     logger.warning("FIREBASE_SERVICE_ACCOUNT environment variable not found. Background imports will fail.")
 
 
+# --- URL safety (SSRF guard) ---------------------------------------------
+
+BASE_DOMAINS = ("tiktok.com", "instagram.com", "youtube.com", "youtu.be")
+MAX_VIDEO_BYTES = int(os.getenv("MAX_VIDEO_BYTES", str(120 * 1024 * 1024)))
+MEDIA_CDN_MARKERS = ("tiktokcdn", "tiktokcdn-us", "fbcdn", "cdninstagram", "ytimg", "googlevideo")
+
+
+def _hostname(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _is_private_host(host: str) -> bool:
+    """Blocks localhost, link-local (cloud metadata) and RFC1918 targets."""
+    if not host or host in ("localhost",) or host.endswith(".local") or host.endswith(".internal"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_private or ipaddress.ip_address(host).is_loopback \
+            or ipaddress.ip_address(host).is_link_local or ipaddress.ip_address(host).is_reserved
+    except ValueError:
+        return False  # not a literal IP
+
+
+def _host_allowed(url: str) -> bool:
+    if not url.lower().startswith("https://"):
+        return False
+    host = _hostname(url)
+    if not host or _is_private_host(host):
+        return False
+    host = host[4:] if host.startswith("www.") else host
+    return any(host == d or host.endswith("." + d) for d in BASE_DOMAINS)
+
+
+def assert_supported_url(url: str) -> str:
+    """Validates a caller-supplied URL before AND after redirect resolution.
+    Returns the resolved canonical URL. Raises 400 for anything off-allowlist."""
+    url = (url or "").strip()
+    if not _host_allowed(url):
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported URL. Only TikTok, Instagram and YouTube links are accepted.",
+        )
+    resolved = resolve_redirects(url)
+    if not _host_allowed(resolved):
+        raise HTTPException(status_code=400, detail="URL redirected to an unsupported destination.")
+    return resolved
+
+
+def is_safe_media_url(url: str) -> bool:
+    """Only allow downloading media from recognised platform CDNs."""
+    if not url or not url.lower().startswith("https://"):
+        return False
+    host = _hostname(url)
+    if not host or _is_private_host(host):
+        return False
+    return any(marker in host for marker in MEDIA_CDN_MARKERS)
+
+
+# --- Auth ------------------------------------------------------------------
+
+def _bearer(authorization: Optional[str]) -> Optional[str]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    return authorization.split(" ", 1)[1].strip() or None
+
+
+def require_user(authorization: Optional[str] = Header(None)) -> str:
+    """Hard requirement: a valid Firebase ID token. Returns the verified uid."""
+    token = _bearer(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Sign-in required.")
+    if not firebase_admin._apps:
+        raise HTTPException(status_code=503, detail="Auth is not configured on the server.")
+    try:
+        return fb_auth.verify_id_token(token)["uid"]
+    except Exception as e:
+        logger.warning(f"Token verification failed: {e}")
+        raise HTTPException(status_code=401, detail="Invalid or expired session. Please sign in again.")
+
+
+def optional_user(authorization: Optional[str] = Header(None)) -> Optional[str]:
+    """Soft auth: identifies the caller when possible, but allows anonymous use."""
+    token = _bearer(authorization)
+    if not token or not firebase_admin._apps:
+        return None
+    try:
+        return fb_auth.verify_id_token(token)["uid"]
+    except Exception:
+        return None
+
+
+# --- Rate limiting ---------------------------------------------------------
+# In-memory sliding window. Adequate for a single instance; swap for Redis if
+# the backend is ever scaled horizontally.
+
+_RATE_LOCK = threading.Lock()
+_RATE_HITS: dict = defaultdict(deque)
+RATE_LIMIT_PER_MIN = int(os.getenv("RATE_LIMIT_PER_MIN", "20"))
+
+
+def rate_limit(request: Request, uid: Optional[str] = Depends(optional_user)) -> None:
+    """Throttles per signed-in user, falling back to client IP for anonymous callers."""
+    identity = uid or (request.client.host if request.client else "unknown")
+    now = time.time()
+    with _RATE_LOCK:
+        hits = _RATE_HITS[identity]
+        while hits and now - hits[0] > 60:
+            hits.popleft()
+        if len(hits) >= RATE_LIMIT_PER_MIN:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many requests. Please wait a minute and try again.",
+            )
+        hits.append(now)
+
+
+def stable_recipe_id(user_id: str, video_id: Optional[str], url: str) -> str:
+    """Deterministic Firestore doc ID so re-importing can never create duplicates
+    and no composite index is needed for de-duplication."""
+    key = video_id or hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", f"{user_id}_{key}")
+    return safe[:200]
+
+
+TIKTOK_VIDEO_ID_RE = re.compile(r"/video/(\d+)")
+
+
+def video_id_from_url(url: str) -> Optional[str]:
+    m = TIKTOK_VIDEO_ID_RE.search(url or "")
+    return m.group(1) if m else None
+
+
 def rehost_thumbnail(thumbnail_url: Optional[str], key: Optional[str]) -> Optional[str]:
     """Download an (expiring) source thumbnail and re-host it in Firebase Storage,
     returning a permanent download URL. Falls back to the original URL on any
     failure or if Storage isn't configured, so extraction can never break."""
     if not thumbnail_url or storage_bucket is None:
+        return thumbnail_url
+    if not is_safe_media_url(thumbnail_url):
+        logger.warning("Refusing to re-host thumbnail from unrecognised host.")
         return thumbnail_url
     try:
         headers = {
@@ -95,21 +238,28 @@ def rehost_thumbnail(thumbnail_url: Optional[str], key: Optional[str]) -> Option
         logger.warning(f"Thumbnail re-host failed, keeping original URL: {e}")
         return thumbnail_url
 
-# Configure CORS - allow all Vercel preview URLs
+# Configure CORS. Pinned to this project's own deployments - the previous
+# `https://.*\.vercel\.app` regex let ANY Vercel app on the internet make
+# credentialed calls to this API.
+DEFAULT_ORIGIN_REGEX = (
+    r"^https://social-recipe-app(-[a-z0-9-]+)?\.vercel\.app$"
+    r"|^https://social-recipe-app\.web\.app$"
+    r"|^http://localhost(:\d+)?$"
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https://.*\.vercel\.app|http://localhost(:\d+)?",
+    allow_origin_regex=os.getenv("ALLOWED_ORIGIN_REGEX", DEFAULT_ORIGIN_REGEX),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # --- Models ---
 
 class ExtractRequest(BaseModel):
     url: str
-    gemini_api_key: Optional[str] = None
-    api_key: Optional[str] = None
+    # NOTE: caller-supplied API keys are deliberately no longer honoured.
+    # Keys come from the server environment only.
 
 class Ingredient(typing_extensions.TypedDict):
     item: str
@@ -154,8 +304,10 @@ def get_video_data(url: str, extract_audio: bool = False):
     Uses yt-dlp to extract metadata like title, description, and thumbnail.
     Optionally downloads audio for transcription.
     """
-    # 0. Resolve Short URLs (Crucial for TikTok)
-    url = resolve_redirects(url)
+    # 0. Validate + resolve short URLs (crucial for TikTok).
+    # assert_supported_url enforces the host allowlist BEFORE and AFTER the
+    # redirect hop, so a caller cannot point this at internal infrastructure.
+    url = assert_supported_url(url)
     logger.info(f"Processing URL: {url}")
     
     # TikTok pre-fetch via oEmbed - TikTok 'title' field = full caption (often has full recipe)
@@ -492,10 +644,11 @@ def extract_direct_video_url(url: str, html: str) -> Optional[str]:
                 clean_url = raw_url.encode('utf-8').decode('unicode_escape')
                 clean_url = clean_url.replace(r'\/', '/')
                 
-                # Check extension or domain to be sure
-                # Filter out small assets or weird matches
-                if (".mp4" in clean_url) and ("tiktokcdn" in clean_url or "fbcdn" in clean_url or "cdn" in clean_url):
-                     return clean_url
+                # Only accept media from recognised platform CDNs. The old check
+                # accepted any URL containing the substring "cdn", which allowed
+                # arbitrary hosts through.
+                if ".mp4" in clean_url and is_safe_media_url(clean_url):
+                    return clean_url
 
         return None
     except Exception as e:
@@ -587,11 +740,13 @@ def is_collection_url(url: str) -> bool:
 
 class ClassifyRequest(BaseModel):
     videos: List[dict]  # [{video_id, title}]
-    api_key: Optional[str] = None
+
+
+MAX_CLASSIFY_BATCH = 60
 
 
 @app.post("/classify-recipes")
-def classify_recipes(request: ClassifyRequest):
+def classify_recipes(request: ClassifyRequest, _rl: None = Depends(rate_limit)):
     """
     Takes a list of video titles and classifies each as a recipe/cooking video or not.
     Uses a single fast LLM call so it's cheap even for large collections.
@@ -599,9 +754,18 @@ def classify_recipes(request: ClassifyRequest):
     if not request.videos:
         return {"results": []}
 
-    api_key = request.api_key or os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise HTTPException(status_code=401, detail="API Key required")
+        raise HTTPException(status_code=503, detail="GEMINI_API_KEY is not configured on the server.")
+
+    # Large collections must be chunked: asking for hundreds of JSON objects in
+    # one response risks truncation, which used to fail silently and mark every
+    # video as a recipe.
+    if len(request.videos) > MAX_CLASSIFY_BATCH:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Too many videos in one request. Send at most {MAX_CLASSIFY_BATCH} per call.",
+        )
 
     titles_list = "\n".join(
         f'{i + 1}. [id:{v.get("video_id", i)}] {v.get("title") or "(no title)"}'
@@ -638,12 +802,12 @@ Return ONLY this JSON object (one entry per video, same order):
 
 
 @app.post("/extract-collection")
-def extract_collection(request: ExtractRequest):
+def extract_collection(request: ExtractRequest, _rl: None = Depends(rate_limit)):
     """
     Extracts all video URLs from a TikTok collection URL.
     Returns list of individual video URLs to be processed one by one.
     """
-    resolved_url = resolve_redirects(request.url)
+    resolved_url = assert_supported_url(request.url)
     logger.info(f"Extracting collection from: {resolved_url}")
 
     ydl_opts = {
@@ -699,30 +863,36 @@ def extract_collection(request: ExtractRequest):
 
 
 @app.post("/extract-recipe")
-def extract_recipe(request: ExtractRequest):
-    gemini_api_key = request.gemini_api_key or os.getenv("GEMINI_API_KEY")
-    groq_api_key = request.api_key or os.getenv("GROQ_API_KEY")
-    
+def extract_recipe(request: ExtractRequest, _rl: None = Depends(rate_limit)):
+    # Validate the URL before anything else, so a bad link reports a bad link.
+    safe_url = assert_supported_url(request.url)
+
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    groq_api_key = os.getenv("GROQ_API_KEY")
+
     if not gemini_api_key:
-        raise HTTPException(status_code=401, detail="Gemini API Key is required (GEMINI_API_KEY)")
+        raise HTTPException(status_code=503, detail="GEMINI_API_KEY is not configured on the server.")
     if not groq_api_key:
         logger.warning("Groq API key not found. Audio transcription will not work.")
 
     # --- STEP 1: Fast pass — metadata + subtitles only (no audio download) ---
-    logger.info(f"Step 1: Fast metadata extraction for {request.url}")
-    raw_text, thumbnail_url, _ = get_video_data(request.url, extract_audio=False)
+    logger.info(f"Step 1: Fast metadata extraction for {safe_url}")
+    raw_text, thumbnail_url, _ = get_video_data(safe_url, extract_audio=False)
 
     # --- STEP 2: If content is rich enough, go straight to LLM ---
     if not is_thin_content(raw_text):
         logger.info(f"Content is rich ({len(raw_text)} chars), skipping audio download")
         recipe_data = parse_with_llm(raw_text, gemini_api_key)
-        recipe_data['image_url'] = rehost_thumbnail(thumbnail_url, recipe_data.get('video_id') or request.url)
+        vid = video_id_from_url(safe_url)
+        recipe_data['video_id'] = vid
+        recipe_data['source_url'] = safe_url
+        recipe_data['image_url'] = rehost_thumbnail(thumbnail_url, vid or safe_url)
         return recipe_data
 
     # --- STEP 3: Thin content — try audio download + Whisper transcription ---
     logger.info("Content thin, attempting audio download + transcription...")
     try:
-        _, _, audio_path = get_video_data(request.url, extract_audio=True)
+        _, _, audio_path = get_video_data(safe_url, extract_audio=True)
         if audio_path and groq_api_key:
             transcript = transcribe_audio(audio_path, groq_api_key)
             if transcript:
@@ -733,25 +903,33 @@ def extract_recipe(request: ExtractRequest):
     # --- STEP 4: Still thin — try direct video download + vision + audio ---
     if is_thin_content(raw_text):
         logger.info("Still thin after audio attempt, trying vision fallback...")
+        # Each request gets its own temp directory. The previous fixed filenames
+        # (temp_vision_vid.mp4) meant concurrent requests overwrote each other,
+        # and nothing was ever deleted.
+        work_dir = tempfile.mkdtemp(prefix="vision_")
         try:
             headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1"}
-            html_resp = requests.get(request.url, headers=headers, timeout=10)
+            html_resp = requests.get(safe_url, headers=headers, timeout=10)
             if html_resp.status_code == 200:
-                direct_url = extract_direct_video_url(request.url, html_resp.text)
-                if direct_url:
-                    temp_vid_path = f"{tempfile.gettempdir()}/temp_vision_vid.mp4"
+                direct_url = extract_direct_video_url(safe_url, html_resp.text)
+                if direct_url and is_safe_media_url(direct_url):
+                    temp_vid_path = os.path.join(work_dir, "video.mp4")
                     vid_resp = requests.get(direct_url, stream=True, timeout=30)
+                    downloaded = 0
                     with open(temp_vid_path, 'wb') as f:
                         for chunk in vid_resp.iter_content(chunk_size=8192):
+                            downloaded += len(chunk)
+                            if downloaded > MAX_VIDEO_BYTES:
+                                raise Exception("Video exceeds size limit; aborting vision fallback.")
                             f.write(chunk)
 
                     # Audio via ffmpeg
-                    temp_audio_path = f"{tempfile.gettempdir()}/temp_vision_audio.mp3"
+                    temp_audio_path = os.path.join(work_dir, "audio.mp3")
                     subprocess.run(
                         ["ffmpeg", "-i", temp_vid_path, "-vn", "-acodec", "libmp3lame", "-y", temp_audio_path],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120
                     )
-                    if groq_api_key:
+                    if groq_api_key and os.path.exists(temp_audio_path):
                         transcript = transcribe_audio(temp_audio_path, groq_api_key)
                         if transcript:
                             raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{transcript}"
@@ -763,73 +941,145 @@ def extract_recipe(request: ExtractRequest):
                         raw_text += visual_desc
         except Exception as e_vision:
             logger.warning(f"Vision fallback failed: {e_vision}")
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
     # --- STEP 5: Parse whatever we have with LLM ---
     recipe_data = parse_with_llm(raw_text, gemini_api_key)
-    recipe_data['image_url'] = rehost_thumbnail(thumbnail_url, recipe_data.get('video_id') or request.url)
+    vid = video_id_from_url(safe_url)
+    recipe_data['video_id'] = vid
+    recipe_data['source_url'] = safe_url
+    recipe_data['image_url'] = rehost_thumbnail(thumbnail_url, vid or safe_url)
     return recipe_data
 
 class BackgroundImportRequest(BaseModel):
     urls: List[str]
-    user_id: str
-    gemini_api_key: Optional[str] = None
-    api_key: Optional[str] = None
+    # user_id is intentionally NOT accepted from the body. It is derived from the
+    # verified Firebase ID token, otherwise anyone could write into any cookbook.
 
-async def process_collection_background_worker(request: BackgroundImportRequest):
+
+MAX_BACKGROUND_URLS = int(os.getenv("MAX_BACKGROUND_URLS", "50"))
+
+
+def _job_ref(user_id: str, job_id: str):
+    return db.collection("import_jobs").document(f"{user_id}_{job_id}")
+
+
+def process_collection_background_worker(urls: List[str], user_id: str, job_id: str):
+    """Runs in FastAPI's threadpool (this is a sync function on purpose).
+
+    The previous version was `async def` but performed blocking yt-dlp, requests
+    and Firestore calls directly on the event loop, which froze the entire
+    server - health checks included - for the duration of every import.
+    """
     if not db:
         logger.error("Database not initialized, cannot process background import.")
         return
 
-    gemini_api_key = request.gemini_api_key or os.getenv("GEMINI_API_KEY")
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
     if not gemini_api_key:
         logger.error("Gemini API key missing for background import.")
         return
 
-    for idx, url in enumerate(request.urls):
+    job = _job_ref(user_id, job_id)
+    total = len(urls)
+    done = failed = skipped = 0
+    try:
+        job.set({
+            "user_id": user_id, "status": "running", "total": total,
+            "done": 0, "failed": 0, "skipped": 0,
+            "started_at": time.time() * 1000, "updated_at": time.time() * 1000,
+        })
+    except Exception as e:
+        logger.warning(f"Could not create job doc: {e}")
+
+    for idx, url in enumerate(urls):
         try:
-            logger.info(f"Background Import: Processing {idx+1}/{len(request.urls)} - {url}")
-            raw_text, thumbnail_url, _ = get_video_data(url, extract_audio=False)
-            recipe_data = parse_with_llm(raw_text, gemini_api_key)
-            recipe_data['image_url'] = rehost_thumbnail(thumbnail_url, recipe_data.get('video_id') or url)
-            
-            if not recipe_data.get('ingredients') or len(recipe_data['ingredients']) == 0:
-                logger.warning(f"Background Import: Skipped {url} (No ingredients found)")
-                continue
-            if recipe_data.get('title') == "No Recipe Found" or "TikTok - Make Your Day" in recipe_data.get('title', ''):
-                logger.warning(f"Background Import: Skipped {url} (Dummy title detected)")
+            logger.info(f"Background Import: Processing {idx+1}/{total} - {url}")
+            safe_url = assert_supported_url(url)
+            vid = video_id_from_url(safe_url)
+
+            # Deterministic doc ID: re-importing overwrites rather than
+            # duplicating, and no composite index is required.
+            doc_id = stable_recipe_id(user_id, vid, safe_url)
+            if db.collection("recipes").document(doc_id).get().exists:
+                skipped += 1
+                logger.info(f"Background Import: Skipped {url} (already exists)")
                 continue
 
-            existing = db.collection('recipes').where('user_id', '==', request.user_id).where('source_url', '==', url).limit(1).get()
-            if len(existing) > 0:
-                logger.info(f"Background Import: Skipped {url} (Already exists)")
+            raw_text, thumbnail_url, _ = get_video_data(safe_url, extract_audio=False)
+            recipe_data = parse_with_llm(raw_text, gemini_api_key)
+
+            if not recipe_data.get("ingredients"):
+                failed += 1
+                logger.warning(f"Background Import: Skipped {url} (no ingredients found)")
+                continue
+            title = recipe_data.get("title") or ""
+            if title == "No Recipe Found" or "TikTok - Make Your Day" in title:
+                failed += 1
+                logger.warning(f"Background Import: Skipped {url} (dummy title)")
                 continue
 
             recipe_doc = {
-                "user_id": request.user_id,
-                "title": recipe_data.get("title", ""),
+                "user_id": user_id,
+                "title": title,
                 "description": recipe_data.get("description", ""),
                 "ingredients": recipe_data.get("ingredients", []),
                 "instructions": recipe_data.get("instructions", []),
                 "tags": recipe_data.get("tags", []),
-                "image_url": recipe_data.get("image_url"),
+                "image_url": rehost_thumbnail(thumbnail_url, vid or safe_url),
                 "prep_time": recipe_data.get("prep_time"),
                 "cook_time": recipe_data.get("cook_time"),
                 "servings": recipe_data.get("servings"),
-                "source_url": url,
-                "created_at": time.time() * 1000
+                "source_url": safe_url,
+                "video_id": vid,
+                "created_at": time.time() * 1000,
             }
-            db.collection("recipes").add(recipe_doc)
+            db.collection("recipes").document(doc_id).set(recipe_doc)
+            done += 1
             logger.info(f"Background Import: Saved {recipe_doc['title']}")
-
         except Exception as e:
+            failed += 1
             logger.error(f"Background Import: Error processing {url}: {e}")
-        
-        await asyncio.sleep(4.5)
 
-@app.post("/api/import-collection-background")
-def import_collection_background(request: BackgroundImportRequest, background_tasks: BackgroundTasks):
-    background_tasks.add_task(process_collection_background_worker, request)
-    return {"status": "started", "message": "Background import initiated successfully."}
+        try:
+            job.update({"done": done, "failed": failed, "skipped": skipped,
+                        "updated_at": time.time() * 1000})
+        except Exception:
+            pass
+        time.sleep(float(os.getenv("IMPORT_DELAY_SECONDS", "4.5")))
+
+    try:
+        job.update({"status": "finished", "done": done, "failed": failed,
+                    "skipped": skipped, "finished_at": time.time() * 1000})
+    except Exception:
+        pass
+
+
+@app.post("/import-collection-background")
+def import_collection_background(
+    request: BackgroundImportRequest,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(require_user),
+):
+    """Server-side import. NOTE: on Render's free plan the instance sleeps after
+    ~15 minutes without inbound traffic, so long imports will not finish here.
+    The web client drives imports itself and only uses this as a fallback."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database is not configured on the server.")
+    urls = [u for u in request.urls if u][:MAX_BACKGROUND_URLS]
+    if not urls:
+        raise HTTPException(status_code=400, detail="No URLs supplied.")
+
+    job_id = uuid.uuid4().hex[:12]
+    background_tasks.add_task(process_collection_background_worker, urls, user_id, job_id)
+    return {
+        "status": "started",
+        "job_id": job_id,
+        "accepted": len(urls),
+        "job_path": f"import_jobs/{user_id}_{job_id}",
+    }
+
 
 @app.get("/")
 def health_check():

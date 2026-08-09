@@ -2,10 +2,14 @@
 
 import React, { useState, useEffect } from 'react';
 import { Recipe } from '../../../types';
-import { db } from '../../../firebase';
-import { doc, getDoc, addDoc, collection } from 'firebase/firestore';
+import { db, auth } from '../../../firebase';
+import { doc, getDoc } from 'firebase/firestore';
+import { saveRecipeToCloud } from '../../../lib/recipes';
 
-export default function SharePage({ params }: { params: { token: string } }) {
+export default function SharePage({ params }: { params: Promise<{ token: string }> }) {
+  // Next.js 16 makes route params a Promise; reading `params.token` directly is
+  // no longer valid.
+  const { token } = React.use(params);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -13,7 +17,7 @@ export default function SharePage({ params }: { params: { token: string } }) {
   const [saving, setSaving] = useState<string | null>(null);
 
   useEffect(() => {
-    getDoc(doc(db, 'shared_links', params.token))
+    getDoc(doc(db, 'shared_links', token))
       .then(docSnap => {
         if (!docSnap.exists()) {
           throw new Error('Share link not found or expired.');
@@ -23,30 +27,19 @@ export default function SharePage({ params }: { params: { token: string } }) {
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
-  }, [params.token]);
+  }, [token]);
 
   const saveRecipe = async (recipe: Recipe) => {
-    const userRaw = localStorage.getItem('chefSocial_user');
-    if (!userRaw) {
+    // Read the live auth state rather than a localStorage copy holding an
+    // ID token that expired an hour after sign-in.
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
       window.location.href = '/';
       return;
     }
-    const user = JSON.parse(userRaw);
     setSaving(recipe.title);
     try {
-      await addDoc(collection(db, 'recipes'), {
-        user_id: user.id,
-        title: recipe.title,
-        description: recipe.description || '',
-        ingredients: recipe.ingredients || [],
-        instructions: recipe.instructions || [],
-        tags: recipe.tags || [],
-        image_url: recipe.image_url || null,
-        prep_time: recipe.prep_time || null,
-        cook_time: recipe.cook_time || null,
-        servings: recipe.servings || null,
-        created_at: Date.now()
-      });
+      await saveRecipeToCloud(currentUser.uid, recipe);
       setSaved(prev => new Set([...prev, recipe.title]));
     } catch (e) {
       console.error(e);

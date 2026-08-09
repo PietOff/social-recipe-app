@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.12-slim
 
 # Install system dependencies (ffmpeg needed for yt-dlp sometimes)
 RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Expose port (railway provides PORT env var)
+# Expose port (Render provides PORT env var)
 ENV PORT=8000
 
 # Start command
