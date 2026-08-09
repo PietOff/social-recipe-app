@@ -25,6 +25,10 @@ export class ApiError extends Error {
   get retryable(): boolean {
     return this.status === 429 || this.status >= 500;
   }
+  /** Quota exhausted for the rest of the day - waiting will not help. */
+  get dailyQuotaExhausted(): boolean {
+    return this.status === 429 && /daily quota/i.test(this.message);
+  }
 }
 
 export async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
