@@ -817,15 +817,28 @@ function HomeContent() {
                 return (
                   <div className={styles.recipeCard} style={{ textAlign: 'center' }}>
                     <div style={{ fontSize: '2rem', marginBottom: '0.75rem' }}>
-                      {running ? '⏳' : importProgress.status === 'finished' ? '✅' : '⏸️'}
+                      {running ? '⏳' : importProgress.status === 'finished' ? '✅' : importProgress.status === 'paused' ? '🚦' : '⏸️'}
                     </div>
                     <h3 style={{ marginBottom: '0.5rem' }}>
                       {running
                         ? `Importing recipes... ${settled}/${importProgress.total}`
                         : importProgress.status === 'finished'
                           ? 'Import complete'
-                          : 'Import stopped'}
+                          : importProgress.status === 'paused'
+                            ? 'Import paused'
+                            : 'Import stopped'}
                     </h3>
+
+                    {importProgress.stopReason && (
+                      <p style={{
+                        margin: '0 0 0.75rem', fontSize: '0.85rem', lineHeight: 1.5,
+                        background: 'rgba(255,193,7,0.12)', border: '1px solid rgba(255,193,7,0.35)',
+                        borderRadius: '10px', padding: '0.6rem 0.8rem', textAlign: 'left'
+                      }}>
+                        {importProgress.stopReason}
+                        {resumable && ` ${resumable.remaining.length} recipe${resumable.remaining.length !== 1 ? 's' : ''} are still queued - press Resume to continue.`}
+                      </p>
+                    )}
 
                     <div style={{ background: 'rgba(255,255,255,0.1)', borderRadius: '8px', overflow: 'hidden', margin: '1rem 0' }}>
                       <div style={{
@@ -870,7 +883,7 @@ function HomeContent() {
                       </button>
                     ) : (
                       <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
-                        {importProgress.status === 'cancelled' && resumable && (
+                        {(importProgress.status === 'cancelled' || importProgress.status === 'paused') && resumable && (
                           <button onClick={handleResumeImport} className={styles.button}>Resume</button>
                         )}
                         <button onClick={dismissImport} className={styles.iconButton} style={{ opacity: 0.6 }}>Dismiss</button>
