@@ -551,13 +551,133 @@ def transcribe_audio(audio_path: str, api_key: str):
         except:
             pass
 
+QUOTA_DAILY_MARKER = "PerDay"
+
+
+def quota_scope(err: Exception) -> Optional[str]:
+    """Returns 'daily' / 'minute' if this is a Gemini quota error, else None.
+
+    Quota exhaustion is fundamentally different from a parsing failure: the
+    request was never served, so the caller should retry later rather than
+    treat the video as unusable. Surfacing it as a generic 500 made the
+    importer discard recipes it should have kept queued.
+    """
+    msg = str(err)
+    if "RESOURCE_EXHAUSTED" not in msg and "429" not in msg:
+        return None
+    return "daily" if QUOTA_DAILY_MARKER in msg else "minute"
+
+
+def raise_if_quota(err: Exception) -> None:
+    scope = quota_scope(err)
+    if not scope:
+        return
+    if scope == "daily":
+        raise HTTPException(
+            status_code=429,
+            detail=("Daily AI quota reached on every configured provider. Free-tier daily "
+                    "limits reset at midnight US Pacific, so the import can continue then."),
+        )
+    raise HTTPException(
+        status_code=429,
+        detail="AI rate limit reached (per-minute cap). Slowing down and retrying.",
+    )
+
+
+# --- LLM provider chain ----------------------------------------------------
+# Gemini's free tier allows only 20 requests/day, which makes bulk imports
+# impossible. Groq's free tier is far larger, so exhausting one provider falls
+# through to the next. The prompt and system instruction are IDENTICAL for every
+# provider, so output shape and quality expectations do not change - only the
+# model that serves the request once the previous one is out of quota.
+
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GROQ_MODELS = [m.strip() for m in os.getenv(
+    "GROQ_MODELS", "openai/gpt-oss-120b,llama-3.1-8b-instant").split(",") if m.strip()]
+
+
+def _gemini_json(prompt: str, system: str, api_key: str) -> str:
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0,
+            response_mime_type="application/json",
+            system_instruction=system,
+        ),
+    )
+    return response.text
+
+
+def _groq_json(prompt: str, system: str, api_key: str, model: str) -> str:
+    client = Groq(api_key=api_key)
+    response = client.chat.completions.create(
+        model=model,
+        temperature=0,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+    )
+    return response.choices[0].message.content
+
+
+def generate_json(prompt: str, system: str) -> dict:
+    """Runs one prompt through the provider chain, returning parsed JSON.
+
+    Falls through to the next provider on any failure (quota, transient error,
+    malformed JSON). Raises 429 only when every provider is out of quota, so the
+    client can distinguish 'try later' from 'this video is unusable'.
+    """
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    groq_key = os.getenv("GROQ_API_KEY")
+
+    providers = []
+    if gemini_key:
+        providers.append((f"gemini:{GEMINI_MODEL}",
+                          lambda: _gemini_json(prompt, system, gemini_key)))
+    if groq_key:
+        for model in GROQ_MODELS:
+            providers.append((f"groq:{model}",
+                              lambda m=model: _groq_json(prompt, system, groq_key, m)))
+
+    if not providers:
+        raise HTTPException(
+            status_code=503,
+            detail="No LLM provider configured. Set GEMINI_API_KEY and/or GROQ_API_KEY.",
+        )
+
+    attempts = []
+    quota_scopes = []
+    for name, call in providers:
+        try:
+            data = json.loads(call())
+            if attempts:
+                logger.info(f"LLM fell through to {name} after: {' | '.join(attempts)}")
+            return data
+        except Exception as e:
+            scope = quota_scope(e)
+            if scope:
+                quota_scopes.append(scope)
+            attempts.append(f"{name}: {'quota:' + scope if scope else str(e)[:150]}")
+            continue
+
+    logger.error(f"All LLM providers failed: {' | '.join(attempts)}")
+    if quota_scopes and len(quota_scopes) == len(providers):
+        # Every provider is rate limited. Prefer the least severe scope so the
+        # client retries shortly rather than pausing for the day when it needn't.
+        raise_if_quota(Exception(
+            "RESOURCE_EXHAUSTED" if "minute" in quota_scopes else "RESOURCE_EXHAUSTED PerDay"))
+    raise HTTPException(status_code=500, detail=f"AI parsing failed. {' | '.join(attempts)}")
+
+
 def parse_with_llm(text_data: str, api_key: str):
     """
     Uses Google Gemini (1.5 Flash) to parse the raw text into a structured Recipe.
     """
     try:
-        client = genai.Client(api_key=api_key)
-        
         prompt = f"""
         You are an expert chef and data parser. Extract a structured recipe from the text below, which comes from a social media cooking video (TikTok/Instagram/YouTube). The text may include video titles, descriptions, captions, subtitles, and/or an audio transcript.
 
@@ -590,19 +710,14 @@ def parse_with_llm(text_data: str, api_key: str):
         {text_data}
         """
         
-        response = client.models.generate_content(
-            model="gemini-2.5-flash", 
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0,
-                response_mime_type="application/json",
-                system_instruction="You are a JSON-only API. You must return a valid JSON object and nothing else."
-            )
+        return generate_json(
+            prompt,
+            "You are a JSON-only API. You must return a valid JSON object and nothing else.",
         )
-        
-        content = response.text
-        return json.loads(content)
+    except HTTPException:
+        raise
     except Exception as e:
+        raise_if_quota(e)
         logger.error(f"Gemini error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"AI parsing failed: {str(e)}")
 
@@ -755,9 +870,8 @@ def classify_recipes(request: ClassifyRequest, _rl: None = Depends(rate_limit)):
     if not request.videos:
         return {"results": []}
 
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=503, detail="GEMINI_API_KEY is not configured on the server.")
+    if not (os.getenv("GEMINI_API_KEY") or os.getenv("GROQ_API_KEY")):
+        raise HTTPException(status_code=503, detail="No LLM provider configured on the server.")
 
     # Large collections must be chunked: asking for hundreds of JSON objects in
     # one response risks truncation, which used to fail silently and mark every
@@ -785,18 +899,11 @@ Return ONLY this JSON object (one entry per video, same order):
 {{"results": [{{"video_id": "string", "is_recipe": true}}]}}"""
 
     try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0,
-                response_mime_type="application/json",
-                system_instruction="You are a JSON-only API. Return only valid JSON."
-            )
-        )
-        return json.loads(response.text)
+        return generate_json(prompt, "You are a JSON-only API. Return only valid JSON.")
     except Exception as e:
+        # Quota errors must surface: silently defaulting everything to
+        # "is a recipe" would hide the real problem from the user.
+        raise_if_quota(e)
         logger.warning(f"Classification failed: {e} — defaulting all to is_recipe=true")
         # Fail gracefully: mark everything as a recipe so nothing gets silently dropped
         return {"results": [{"video_id": v.get("video_id", str(i)), "is_recipe": True} for i, v in enumerate(request.videos)]}
@@ -871,8 +978,8 @@ def extract_recipe(request: ExtractRequest, _rl: None = Depends(rate_limit)):
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     groq_api_key = os.getenv("GROQ_API_KEY")
 
-    if not gemini_api_key:
-        raise HTTPException(status_code=503, detail="GEMINI_API_KEY is not configured on the server.")
+    if not (gemini_api_key or groq_api_key):
+        raise HTTPException(status_code=503, detail="No LLM provider configured on the server.")
     if not groq_api_key:
         logger.warning("Groq API key not found. Audio transcription will not work.")
 
@@ -1161,4 +1268,15 @@ def thumbnail(video_id: str, _rl: None = Depends(thumb_rate_limit)):
 
 @app.get("/")
 def health_check():
-    return {"status": "ok", "service": "Social Recipe Extractor (Groq+Whisper)"}
+    return {
+        "status": "ok",
+        "service": "Social Recipe Extractor",
+        # Booleans only - never the key values themselves.
+        "providers": {
+            "gemini": bool(os.getenv("GEMINI_API_KEY")),
+            "groq": bool(os.getenv("GROQ_API_KEY")),
+            "firebase_admin": bool(firebase_admin._apps),
+        },
+        "llm_chain": ([f"gemini:{GEMINI_MODEL}"] if os.getenv("GEMINI_API_KEY") else [])
+                     + ([f"groq:{m}" for m in GROQ_MODELS] if os.getenv("GROQ_API_KEY") else []),
+    }
