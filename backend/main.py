@@ -5,6 +5,7 @@ import typing_extensions
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 import yt_dlp
 import requests
@@ -1079,6 +1080,83 @@ def import_collection_background(
         "accepted": len(urls),
         "job_path": f"import_jobs/{user_id}_{job_id}",
     }
+
+
+# --- Thumbnail resolver ----------------------------------------------------
+# TikTok CDN thumbnail URLs are signed and expire, so any image_url captured at
+# import time rots within days (verified: old URLs return 403). Rather than
+# re-hosting them - which needs Cloud Storage, and therefore a Blaze plan - we
+# re-resolve the current thumbnail on demand via oEmbed and redirect to it.
+# Thumbnails become self-healing at no cost.
+
+THUMB_RATE_LIMIT_PER_MIN = int(os.getenv("THUMB_RATE_LIMIT_PER_MIN", "300"))
+THUMB_TTL_SECONDS = int(os.getenv("THUMB_TTL_SECONDS", "3600"))
+_THUMB_CACHE: dict = {}
+_THUMB_HITS: dict = defaultdict(deque)
+VIDEO_ID_RE = re.compile(r"^\d{5,32}$")
+
+
+def thumb_rate_limit(request: Request) -> None:
+    """Separate, higher budget from the main API limiter: one cookbook page
+    legitimately requests dozens of thumbnails at once."""
+    identity = request.client.host if request.client else "unknown"
+    now = time.time()
+    with _RATE_LOCK:
+        hits = _THUMB_HITS[identity]
+        while hits and now - hits[0] > 60:
+            hits.popleft()
+        if len(hits) >= THUMB_RATE_LIMIT_PER_MIN:
+            raise HTTPException(status_code=429, detail="Too many thumbnail requests.")
+        hits.append(now)
+
+
+def resolve_tiktok_thumbnail(video_id: str) -> Optional[str]:
+    """oEmbed resolves from the video id alone, so the uploader handle can be a
+    placeholder - which matters because legacy recipes never stored one."""
+    try:
+        r = requests.get(
+            "https://www.tiktok.com/oembed",
+            params={"url": f"https://www.tiktok.com/@_/video/{video_id}"},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=8,
+        )
+        if r.status_code == 200:
+            return r.json().get("thumbnail_url") or None
+    except Exception as e:
+        logger.warning(f"Thumbnail resolve failed for {video_id}: {e}")
+    return None
+
+
+@app.get("/thumbnail")
+def thumbnail(video_id: str, _rl: None = Depends(thumb_rate_limit)):
+    if not VIDEO_ID_RE.match(video_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid video id.")
+
+    now = time.time()
+    with _RATE_LOCK:
+        cached = _THUMB_CACHE.get(video_id)
+        if cached and cached[1] > now:
+            resolved = cached[0]
+        else:
+            resolved = None
+
+    if resolved is None:
+        resolved = resolve_tiktok_thumbnail(video_id)
+        if not resolved or not is_safe_media_url(resolved):
+            raise HTTPException(status_code=404, detail="No thumbnail available.")
+        with _RATE_LOCK:
+            _THUMB_CACHE[video_id] = (resolved, now + THUMB_TTL_SECONDS)
+            if len(_THUMB_CACHE) > 5000:
+                for k in [k for k, v in _THUMB_CACHE.items() if v[1] <= now][:1000]:
+                    _THUMB_CACHE.pop(k, None)
+
+    # Redirect rather than proxy: the bytes never touch this instance, which
+    # matters on a free plan with limited bandwidth.
+    return RedirectResponse(
+        resolved,
+        status_code=302,
+        headers={"Cache-Control": "public, max-age=1800"},
+    )
 
 
 @app.get("/")
