@@ -9,4 +9,15 @@ services:
         sync: false
       - key: GROQ_API_KEY
         sync: false
+      # Required for the server-side import fallback and thumbnail re-hosting.
+      # Previously undeclared, so those features failed silently in production.
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
+      - key: FIREBASE_STORAGE_BUCKET
+        sync: false
+      # Comma-free regex of allowed browser origins.
+      - key: ALLOWED_ORIGIN_REGEX
+        sync: false
+      - key: RATE_LIMIT_PER_MIN
+        value: "20"
     plan: free
