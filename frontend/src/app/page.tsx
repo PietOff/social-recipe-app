@@ -28,6 +28,7 @@ import {
   thumbnailSrc,
 } from '../lib/recipes';
 import { useCollectionImport, CollectionVideo } from '../hooks/useCollectionImport';
+import { exportRecipesToPdf } from '../lib/printExport';
 
 interface User {
   id: string;
@@ -451,8 +452,15 @@ function HomeContent() {
     }
   };
 
+  // Renders a clean printable document in a hidden iframe instead of
+  // window.print() on the live page, which produced broken/blank output.
   const handlePrint = () => {
-    window.print();
+    if (recipe) exportRecipesToPdf([recipe]);
+  };
+
+  const handleExportPdf = (recipesToExport: Recipe[], cookbook: boolean) => {
+    if (recipesToExport.length === 0) return;
+    exportRecipesToPdf(recipesToExport, { cookbook, title: 'My Cookbook' });
   };
 
   const [shareLink, setShareLink] = useState<string | null>(null);
@@ -465,20 +473,36 @@ function HomeContent() {
       navigator.clipboard.writeText(link).then(() => {
         setShareCopied(true);
         setTimeout(() => setShareCopied(false), 2500);
-      }).catch(() => fallbackCopy());
+      }).catch(() => fallbackCopy(link));
     } else {
-      fallbackCopy();
+      fallbackCopy(link);
     }
   };
 
-  const fallbackCopy = () => {
+  const fallbackCopy = (link: string) => {
+    // The visible input may not be mounted yet when auto-copy fires right
+    // after link creation, so copy from a temporary off-screen textarea.
     const input = shareLinkRef.current;
-    if (!input) return;
-    input.select();
-    input.setSelectionRange(0, 99999);
-    document.execCommand('copy');
-    setShareCopied(true);
-    setTimeout(() => setShareCopied(false), 2500);
+    let copied = false;
+    if (input) {
+      input.select();
+      input.setSelectionRange(0, 99999);
+      copied = document.execCommand('copy');
+    }
+    if (!copied) {
+      const ta = document.createElement('textarea');
+      ta.value = link;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      copied = document.execCommand('copy');
+      ta.remove();
+    }
+    if (copied) {
+      setShareCopied(true);
+      setTimeout(() => setShareCopied(false), 2500);
+    }
   };
 
   const handleShare = async (recipesToShare: Recipe[]) => {
@@ -490,8 +514,13 @@ function HomeContent() {
       const shareToken = crypto.randomUUID().replace(/-/g, '');
 
       const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+      // Firestore rejects any object containing `undefined` field values, and
+      // freshly extracted recipes have optional fields left undefined - which
+      // made this write throw and no link was ever created. The JSON
+      // round-trip strips them.
+      const cleanRecipes: Recipe[] = JSON.parse(JSON.stringify(recipesToShare));
       await setDoc(doc(db, 'shared_links', shareToken), {
-        recipes: recipesToShare,
+        recipes: cleanRecipes,
         created_by: user.id,
         created_at: Date.now(),
         expires_at: Date.now() + THIRTY_DAYS
@@ -635,6 +664,9 @@ function HomeContent() {
                       <button className={styles.userMenuItem} onClick={handleExportCookbook}>
                         <span>📥</span> Export Cookbook
                       </button>
+                      <button className={styles.userMenuItem} onClick={() => { setUserMenuOpen(false); handleExportPdf(savedRecipes, true); }}>
+                        <span>📖</span> Cookbook PDF
+                      </button>
                       <button className={styles.userMenuItem} onClick={handleClearImportCache}>
                         <span>🔄</span> Reset Import Cache
                       </button>
@@ -696,6 +728,20 @@ function HomeContent() {
 
         <div className={styles.mainContent}>
 
+          {/* Errors and the share-link toast render on every view: shares can
+              be started from the cookbook too, where they used to be invisible. */}
+          {error && <div className={styles.error}>{error}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>💡 Tip: Try using TikTok or Instagram links instead</small></>}</div>}
+
+          {shareLink && (
+            <div className={styles.shareToast}>
+              <input ref={shareLinkRef} readOnly value={shareLink} onClick={e => (e.target as HTMLInputElement).select()} className={styles.shareLinkInput} />
+              <button onClick={() => copyShareLink(shareLink)} className={styles.button} style={{ whiteSpace: 'nowrap', padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}>
+                {shareCopied ? 'Copied!' : 'Copy'}
+              </button>
+              <button onClick={() => { setShareLink(null); setShareCopied(false); }} className={styles.iconButton} style={{ opacity: 0.5, padding: '0 0.25rem' }}>×</button>
+            </div>
+          )}
+
           {/* VIEW: HOME (Extraction) */}
           {(view === 'home' || view === 'details') && (
             <>
@@ -718,18 +764,6 @@ function HomeContent() {
                     {loading ? 'Extracting...' : 'Get Recipe'}
                   </button>
                 </form>
-              )}
-
-              {error && <div className={styles.error}>{error}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>💡 Tip: Try using TikTok or Instagram links instead</small></>}</div>}
-
-              {shareLink && (
-                <div className={styles.shareToast}>
-                  <input ref={shareLinkRef} readOnly value={shareLink} onClick={e => (e.target as HTMLInputElement).select()} className={styles.shareLinkInput} />
-                  <button onClick={() => copyShareLink(shareLink)} className={styles.button} style={{ whiteSpace: 'nowrap', padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}>
-                    {shareCopied ? 'Copied!' : 'Copy'}
-                  </button>
-                  <button onClick={() => { setShareLink(null); setShareCopied(false); }} className={styles.iconButton} style={{ opacity: 0.5, padding: '0 0.25rem' }}>×</button>
-                </div>
               )}
 
               {/* Collection detected UI */}
@@ -1103,18 +1137,36 @@ function HomeContent() {
               {/* Bulk action bar */}
               {selectMode && bulkSelected.size > 0 && (
                 <div className={styles.bulkBar}>
-                  <span style={{ opacity: 0.8 }}>{bulkSelected.size} selected</span>
-                  <button
-                    onClick={() => {
-                      const recipes = savedRecipes.filter(r => bulkSelected.has(recipeKey(r)));
-                      handleShare(recipes).then(() => { setSelectMode(false); setBulkSelected(new Set()); });
-                    }}
-                    className={styles.button}
-                    disabled={shareLoading}
-                    style={{ padding: '0.5rem 1.2rem', fontSize: '0.9rem' }}
-                  >
-                    🔗 {shareLoading ? 'Creating link...' : 'Share selected'}
-                  </button>
+                  <span style={{ opacity: 0.8, whiteSpace: 'nowrap' }}>{bulkSelected.size} selected</span>
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    <button
+                      onClick={() => handleExportPdf(savedRecipes.filter(r => bulkSelected.has(recipeKey(r))), false)}
+                      className={styles.button}
+                      style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: 'rgba(255,255,255,0.12)' }}
+                      title="Export the selected recipes as one PDF, one recipe per page"
+                    >
+                      🖨️ Export PDF
+                    </button>
+                    <button
+                      onClick={() => handleExportPdf(savedRecipes.filter(r => bulkSelected.has(recipeKey(r))), true)}
+                      className={styles.button}
+                      style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: 'rgba(255,255,255,0.12)' }}
+                      title="Export as a cookbook PDF: cover page, table of contents and recipes grouped by category"
+                    >
+                      📖 Cookbook PDF
+                    </button>
+                    <button
+                      onClick={() => {
+                        const recipes = savedRecipes.filter(r => bulkSelected.has(recipeKey(r)));
+                        handleShare(recipes).then(() => { setSelectMode(false); setBulkSelected(new Set()); });
+                      }}
+                      className={styles.button}
+                      disabled={shareLoading}
+                      style={{ padding: '0.5rem 1.2rem', fontSize: '0.9rem' }}
+                    >
+                      🔗 {shareLoading ? 'Creating link...' : 'Share selected'}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
