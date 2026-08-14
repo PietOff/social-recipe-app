@@ -18,6 +18,10 @@ services:
       # Comma-free regex of allowed browser origins.
       - key: ALLOWED_ORIGIN_REGEX
         sync: false
+      # Optional: Netscape cookies.txt content for yt-dlp, to get past
+      # YouTube's datacenter-IP bot checks (export from a logged-in browser).
+      - key: YTDLP_COOKIES
+        sync: false
       - key: RATE_LIMIT_PER_MIN
         value: "20"
     plan: free

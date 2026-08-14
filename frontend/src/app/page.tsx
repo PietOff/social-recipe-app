@@ -26,8 +26,11 @@ import {
   isSameRecipe,
   videoIdFromUrl,
   thumbnailSrc,
+  loadFailedImportIds,
+  clearFailedImportIds,
 } from '../lib/recipes';
 import { useCollectionImport, CollectionVideo } from '../hooks/useCollectionImport';
+import { exportRecipesToPdf } from '../lib/printExport';
 
 interface User {
   id: string;
@@ -50,6 +53,8 @@ function HomeContent() {
   const [classifying, setClassifying] = useState(false);
   const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(new Set());
   const [importedVideoIds, setImportedVideoIds] = useState<Set<string>>(new Set());
+  // Videos that previously extracted to zero ingredients; skipped on later runs.
+  const [failedVideoIds, setFailedVideoIds] = useState<Set<string>>(new Set());
   const { progress: importProgress, start: startImport, cancel: cancelImport, resume: resumeImport, dismiss: dismissImport, resumable } = useCollectionImport();
   const cookbookScrollY = React.useRef(0);
   const [cookbookLoading, setCookbookLoading] = useState(false);
@@ -97,6 +102,7 @@ function HomeContent() {
     if (storedIds) {
       try { setImportedVideoIds(new Set(JSON.parse(storedIds))); } catch { /* ignore */ }
     }
+    setFailedVideoIds(loadFailedImportIds());
 
     // 1. Immediately hydrate from cache (for instant visibility)
     const cachedCookbook = localStorage.getItem('chefSocial_cached_cookbook');
@@ -263,6 +269,9 @@ function HomeContent() {
     setUserMenuOpen(false);
     setImportedVideoIds(new Set());
     localStorage.removeItem('chefSocial_imported_video_ids');
+    // Also forget videos that failed with "no ingredients", so they get retried.
+    clearFailedImportIds();
+    setFailedVideoIds(new Set());
   };
 
   const saveRecipe = async (recipeToSave: Recipe) => {
@@ -378,11 +387,15 @@ function HomeContent() {
         if (collectionData && collectionData.is_collection && (collectionData.count ?? 0) > 0) {
           const videos: CollectionVideo[] = collectionData.videos ?? [];
           setCollectionVideos(videos);
-          setCollectionTitle(collectionData.collection_title || 'TikTok Collection');
+          setCollectionTitle(collectionData.collection_title || 'Collection');
           setLoading(false);
 
           setClassifying(true);
-          const selectAll = () => new Set(videos.map(v => v.video_id ?? v.url));
+          // Fresh read: an import may have recorded new failures since mount.
+          const failedNow = loadFailedImportIds();
+          setFailedVideoIds(failedNow);
+          const withoutFailed = (ids: Set<string>) => new Set([...ids].filter(k => !failedNow.has(k)));
+          const selectAll = () => withoutFailed(new Set(videos.map(v => v.video_id ?? v.url)));
           try {
             // Chunked: asking one LLM call to emit hundreds of JSON objects
             // risks truncation, which silently marked every video as a recipe.
@@ -410,7 +423,7 @@ function HomeContent() {
                 chunks[i].forEach(v => recipeIds.add(v.video_id ?? v.url));
               }
             });
-            setSelectedVideoIds(recipeIds.size > 0 ? recipeIds : selectAll());
+            setSelectedVideoIds(recipeIds.size > 0 ? withoutFailed(recipeIds) : selectAll());
           } catch {
             setSelectedVideoIds(selectAll());
           } finally {
@@ -451,8 +464,15 @@ function HomeContent() {
     }
   };
 
+  // Renders a clean printable document in a hidden iframe instead of
+  // window.print() on the live page, which produced broken/blank output.
   const handlePrint = () => {
-    window.print();
+    if (recipe) exportRecipesToPdf([recipe]);
+  };
+
+  const handleExportPdf = (recipesToExport: Recipe[], cookbook: boolean) => {
+    if (recipesToExport.length === 0) return;
+    exportRecipesToPdf(recipesToExport, { cookbook, title: 'My Cookbook' });
   };
 
   const [shareLink, setShareLink] = useState<string | null>(null);
@@ -465,20 +485,36 @@ function HomeContent() {
       navigator.clipboard.writeText(link).then(() => {
         setShareCopied(true);
         setTimeout(() => setShareCopied(false), 2500);
-      }).catch(() => fallbackCopy());
+      }).catch(() => fallbackCopy(link));
     } else {
-      fallbackCopy();
+      fallbackCopy(link);
     }
   };
 
-  const fallbackCopy = () => {
+  const fallbackCopy = (link: string) => {
+    // The visible input may not be mounted yet when auto-copy fires right
+    // after link creation, so copy from a temporary off-screen textarea.
     const input = shareLinkRef.current;
-    if (!input) return;
-    input.select();
-    input.setSelectionRange(0, 99999);
-    document.execCommand('copy');
-    setShareCopied(true);
-    setTimeout(() => setShareCopied(false), 2500);
+    let copied = false;
+    if (input) {
+      input.select();
+      input.setSelectionRange(0, 99999);
+      copied = document.execCommand('copy');
+    }
+    if (!copied) {
+      const ta = document.createElement('textarea');
+      ta.value = link;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      copied = document.execCommand('copy');
+      ta.remove();
+    }
+    if (copied) {
+      setShareCopied(true);
+      setTimeout(() => setShareCopied(false), 2500);
+    }
   };
 
   const handleShare = async (recipesToShare: Recipe[]) => {
@@ -490,8 +526,13 @@ function HomeContent() {
       const shareToken = crypto.randomUUID().replace(/-/g, '');
 
       const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+      // Firestore rejects any object containing `undefined` field values, and
+      // freshly extracted recipes have optional fields left undefined - which
+      // made this write throw and no link was ever created. The JSON
+      // round-trip strips them.
+      const cleanRecipes: Recipe[] = JSON.parse(JSON.stringify(recipesToShare));
       await setDoc(doc(db, 'shared_links', shareToken), {
-        recipes: recipesToShare,
+        recipes: cleanRecipes,
         created_by: user.id,
         created_at: Date.now(),
         expires_at: Date.now() + THIRTY_DAYS
@@ -635,6 +676,9 @@ function HomeContent() {
                       <button className={styles.userMenuItem} onClick={handleExportCookbook}>
                         <span>📥</span> Export Cookbook
                       </button>
+                      <button className={styles.userMenuItem} onClick={() => { setUserMenuOpen(false); handleExportPdf(savedRecipes, true); }}>
+                        <span>📖</span> Cookbook PDF
+                      </button>
                       <button className={styles.userMenuItem} onClick={handleClearImportCache}>
                         <span>🔄</span> Reset Import Cache
                       </button>
@@ -696,6 +740,20 @@ function HomeContent() {
 
         <div className={styles.mainContent}>
 
+          {/* Errors and the share-link toast render on every view: shares can
+              be started from the cookbook too, where they used to be invisible. */}
+          {error && <div className={styles.error}>{error}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>💡 Tip: Try using TikTok or Instagram links instead</small></>}</div>}
+
+          {shareLink && (
+            <div className={styles.shareToast}>
+              <input ref={shareLinkRef} readOnly value={shareLink} onClick={e => (e.target as HTMLInputElement).select()} className={styles.shareLinkInput} />
+              <button onClick={() => copyShareLink(shareLink)} className={styles.button} style={{ whiteSpace: 'nowrap', padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}>
+                {shareCopied ? 'Copied!' : 'Copy'}
+              </button>
+              <button onClick={() => { setShareLink(null); setShareCopied(false); }} className={styles.iconButton} style={{ opacity: 0.5, padding: '0 0.25rem' }}>×</button>
+            </div>
+          )}
+
           {/* VIEW: HOME (Extraction) */}
           {(view === 'home' || view === 'details') && (
             <>
@@ -720,18 +778,6 @@ function HomeContent() {
                 </form>
               )}
 
-              {error && <div className={styles.error}>{error}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>💡 Tip: Try using TikTok or Instagram links instead</small></>}</div>}
-
-              {shareLink && (
-                <div className={styles.shareToast}>
-                  <input ref={shareLinkRef} readOnly value={shareLink} onClick={e => (e.target as HTMLInputElement).select()} className={styles.shareLinkInput} />
-                  <button onClick={() => copyShareLink(shareLink)} className={styles.button} style={{ whiteSpace: 'nowrap', padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}>
-                    {shareCopied ? 'Copied!' : 'Copy'}
-                  </button>
-                  <button onClick={() => { setShareLink(null); setShareCopied(false); }} className={styles.iconButton} style={{ opacity: 0.5, padding: '0 0.25rem' }}>×</button>
-                </div>
-              )}
-
               {/* Collection detected UI */}
               {collectionVideos && importProgress.status !== 'running' && (
                 <div className={styles.recipeCard}>
@@ -749,7 +795,7 @@ function HomeContent() {
                           {selectedVideoIds.size} of {collectionVideos.length} selected
                         </span>
                         <div style={{ display: 'flex', gap: '0.5rem' }}>
-                          <button onClick={() => setSelectedVideoIds(new Set(collectionVideos.filter(v => !importedVideoIds.has(v.video_id ?? v.url)).map(v => v.video_id ?? v.url)))} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>All</button>
+                          <button onClick={() => setSelectedVideoIds(new Set(collectionVideos.filter(v => !importedVideoIds.has(v.video_id ?? v.url) && !failedVideoIds.has(v.video_id ?? v.url)).map(v => v.video_id ?? v.url)))} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>All</button>
                           <span style={{ opacity: 0.4 }}>|</span>
                           <button onClick={() => setSelectedVideoIds(new Set())} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>None</button>
                         </div>
@@ -759,15 +805,17 @@ function HomeContent() {
                         {collectionVideos.map((v, i) => {
                           const key = v.video_id ?? v.url;
                           const alreadyImported = importedVideoIds.has(key);
+                          const failedBefore = !alreadyImported && failedVideoIds.has(key);
+                          const unavailable = alreadyImported || failedBefore;
                           const checked = selectedVideoIds.has(key);
                           return (
-                            <label key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.4rem 0.6rem', borderRadius: '8px', background: checked ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)', cursor: alreadyImported ? 'default' : 'pointer', opacity: alreadyImported ? 0.35 : checked ? 1 : 0.5 }}>
+                            <label key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.4rem 0.6rem', borderRadius: '8px', background: checked ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)', cursor: unavailable ? 'default' : 'pointer', opacity: unavailable ? 0.35 : checked ? 1 : 0.5 }}>
                               <input
                                 type="checkbox"
                                 checked={checked}
-                                disabled={alreadyImported}
+                                disabled={unavailable}
                                 onChange={() => {
-                                  if (alreadyImported) return;
+                                  if (unavailable) return;
                                   setSelectedVideoIds(prev => {
                                     const next = new Set(prev);
                                     checked ? next.delete(key) : next.add(key);
@@ -781,6 +829,9 @@ function HomeContent() {
                               </span>
                               {alreadyImported && (
                                 <span style={{ fontSize: '0.75rem', opacity: 0.6, flexShrink: 0 }}>already saved</span>
+                              )}
+                              {failedBefore && (
+                                <span style={{ fontSize: '0.75rem', opacity: 0.6, flexShrink: 0 }}>no recipe found</span>
                               )}
                             </label>
                           );
@@ -1103,18 +1154,36 @@ function HomeContent() {
               {/* Bulk action bar */}
               {selectMode && bulkSelected.size > 0 && (
                 <div className={styles.bulkBar}>
-                  <span style={{ opacity: 0.8 }}>{bulkSelected.size} selected</span>
-                  <button
-                    onClick={() => {
-                      const recipes = savedRecipes.filter(r => bulkSelected.has(recipeKey(r)));
-                      handleShare(recipes).then(() => { setSelectMode(false); setBulkSelected(new Set()); });
-                    }}
-                    className={styles.button}
-                    disabled={shareLoading}
-                    style={{ padding: '0.5rem 1.2rem', fontSize: '0.9rem' }}
-                  >
-                    🔗 {shareLoading ? 'Creating link...' : 'Share selected'}
-                  </button>
+                  <span style={{ opacity: 0.8, whiteSpace: 'nowrap' }}>{bulkSelected.size} selected</span>
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    <button
+                      onClick={() => handleExportPdf(savedRecipes.filter(r => bulkSelected.has(recipeKey(r))), false)}
+                      className={styles.button}
+                      style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: 'rgba(255,255,255,0.12)' }}
+                      title="Export the selected recipes as one PDF, one recipe per page"
+                    >
+                      🖨️ Export PDF
+                    </button>
+                    <button
+                      onClick={() => handleExportPdf(savedRecipes.filter(r => bulkSelected.has(recipeKey(r))), true)}
+                      className={styles.button}
+                      style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: 'rgba(255,255,255,0.12)' }}
+                      title="Export as a cookbook PDF: cover page, table of contents and recipes grouped by category"
+                    >
+                      📖 Cookbook PDF
+                    </button>
+                    <button
+                      onClick={() => {
+                        const recipes = savedRecipes.filter(r => bulkSelected.has(recipeKey(r)));
+                        handleShare(recipes).then(() => { setSelectMode(false); setBulkSelected(new Set()); });
+                      }}
+                      className={styles.button}
+                      disabled={shareLoading}
+                      style={{ padding: '0.5rem 1.2rem', fontSize: '0.9rem' }}
+                    >
+                      🔗 {shareLoading ? 'Creating link...' : 'Share selected'}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
