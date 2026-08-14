@@ -25,7 +25,7 @@ from fastapi import BackgroundTasks
 import firebase_admin
 from firebase_admin import credentials, firestore, storage, auth as fb_auth
 import uuid
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote, urlparse
 import hashlib
 import ipaddress
 import shutil
@@ -318,6 +318,31 @@ def _is_youtube(url: str) -> bool:
     return host in ("youtu.be", "youtube.com") or host.endswith(".youtube.com")
 
 
+def _is_instagram(url: str) -> bool:
+    host = _hostname(url)
+    host = host[4:] if host.startswith("www.") else host
+    return host == "instagram.com" or host.endswith(".instagram.com")
+
+
+INSTAGRAM_POST_RE = re.compile(r"/(reel|reels|p|tv)/([A-Za-z0-9_-]+)")
+
+
+def canonicalize_source_url(url: str) -> str:
+    """Normalizes an Instagram post URL to a stable canonical form.
+
+    Share links carry per-share tracking params (?igsh=...), so the same reel
+    hashed by full URL produced a different recipe id for every person who
+    shared it - re-imports duplicated instead of overwriting."""
+    if _is_instagram(url):
+        # unquote: a login redirect carries the post path percent-encoded
+        # in its ?next= parameter.
+        m = INSTAGRAM_POST_RE.search(unquote(url))
+        if m:
+            kind = "reel" if m.group(1) in ("reel", "reels") else m.group(1)
+            return f"https://www.instagram.com/{kind}/{m.group(2)}/"
+    return url
+
+
 TIKTOK_SCOPES = ("webapp.reflow.video.detail", "webapp.video-detail")
 
 
@@ -377,6 +402,80 @@ def tiktok_page_extract(url: str) -> dict:
                 logger.warning(f"Subtitle fetch failed: {e_sub}")
     except Exception as e:
         logger.warning(f"TikTok page extraction failed: {e}")
+    return out
+
+
+def instagram_page_extract(url: str) -> dict:
+    """Pulls the full caption and thumbnail from Instagram's embed page.
+
+    Instagram serves the normal post page behind a login wall to datacenter
+    IPs, so the generic og:description fallback only ever saw a truncated
+    "N likes, M comments - ..." snippet - captions containing a complete
+    recipe were reported as "no recipe". The /embed/captioned/ variant exists
+    for third-party embeds, is served without auth, and carries the whole
+    caption both as rendered HTML and inside its context JSON.
+    """
+    out = {"desc": "", "thumbnail": ""}
+    m = INSTAGRAM_POST_RE.search(unquote(url))
+    if not m:
+        return out
+    shortcode = m.group(2)
+    try:
+        headers = {
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        r = requests.get(
+            f"https://www.instagram.com/p/{shortcode}/embed/captioned/",
+            headers=headers, timeout=15)
+        if r.status_code != 200 or not r.text:
+            return out
+        html_text = r.text
+
+        # Route 1: the rendered caption block.
+        cap = re.search(r'<div class="Caption"[^>]*>(.*?)<div class="CaptionComments"',
+                        html_text, re.DOTALL)
+        if not cap:
+            cap = re.search(r'<div class="Caption"[^>]*>(.*?)</div>', html_text, re.DOTALL)
+        if cap:
+            text = re.sub(r"<br\s*/?>", "\n", cap.group(1))
+            text = re.sub(r"<[^>]+>", " ", text)
+            out["desc"] = html.unescape(text).strip()
+
+        # Route 2: caption text inside the page JSON (plain or string-escaped).
+        if not out["desc"]:
+            mm = re.search(
+                r'"edge_media_to_caption"\s*:\s*\{"edges":\s*\[\{"node":\s*\{"text":\s*"((?:[^"\\]|\\.)*)"',
+                html_text)
+            if mm:
+                try:
+                    out["desc"] = json.loads(f'"{mm.group(1)}"').strip()
+                except Exception:
+                    pass
+        if not out["desc"]:
+            ctx = re.search(r'"contextJSON"\s*:\s*"((?:[^"\\]|\\.)*)"', html_text)
+            if ctx:
+                try:
+                    ctx_data = json.loads(json.loads(f'"{ctx.group(1)}"'))
+                    media = (ctx_data.get("gql_data") or {}).get("shortcode_media") or {}
+                    edges = (media.get("edge_media_to_caption") or {}).get("edges") or []
+                    if edges:
+                        out["desc"] = (edges[0].get("node") or {}).get("text", "").strip()
+                    if not out["thumbnail"]:
+                        out["thumbnail"] = media.get("display_url", "") or ""
+                except Exception as e_ctx:
+                    logger.warning(f"Instagram contextJSON parse failed: {e_ctx}")
+
+        if not out["thumbnail"]:
+            img = re.search(r'class="EmbeddedMediaImage"[^>]*\bsrc="([^"]+)"', html_text)
+            if img:
+                out["thumbnail"] = html.unescape(img.group(1))
+
+        if out["desc"]:
+            logger.info(f"Instagram embed path: caption={len(out['desc'])} chars")
+    except Exception as e:
+        logger.warning(f"Instagram embed extraction failed: {e}")
     return out
 
 
@@ -517,6 +616,16 @@ def get_video_data(url: str, extract_audio: bool = False):
                 combined += f"\n\n[SUBTITLES/CAPTIONS - spoken narration]:\n{page['subtitles']}"
             logger.info(f"YouTube page path: desc={len(page['desc'])} chars, "
                         f"subtitles={len(page['subtitles'])} chars")
+            return combined, page["thumbnail"], None
+
+    # Instagram primary path: full caption from the login-free embed page.
+    # The normal post page is behind a login wall for server IPs, which
+    # reduced captions to a truncated "N likes, M comments" snippet.
+    if _is_instagram(url) and not extract_audio:
+        page = instagram_page_extract(url)
+        if page["desc"]:
+            title = page["desc"].split("\n")[0][:80] or "Instagram video"
+            combined = f"Title: {title}\nDescription: {page['desc']}"
             return combined, page["thumbnail"], None
 
     # 1. Base options for metadata
@@ -1223,7 +1332,7 @@ def extract_collection(request: ExtractRequest, _rl: None = Depends(rate_limit))
 @app.post("/extract-recipe")
 def extract_recipe(request: ExtractRequest, _rl: None = Depends(rate_limit)):
     # Validate the URL before anything else, so a bad link reports a bad link.
-    safe_url = assert_supported_url(request.url)
+    safe_url = canonicalize_source_url(assert_supported_url(request.url))
 
     if not (os.getenv("GEMINI_API_KEY") or os.getenv("GROQ_API_KEY")):
         raise HTTPException(status_code=503, detail="No LLM provider configured on the server.")
@@ -1362,7 +1471,7 @@ def process_collection_background_worker(urls: List[str], user_id: str, job_id: 
     for idx, url in enumerate(urls):
         try:
             logger.info(f"Background Import: Processing {idx+1}/{total} - {url}")
-            safe_url = assert_supported_url(url)
+            safe_url = canonicalize_source_url(assert_supported_url(url))
             vid = video_id_from_url(safe_url)
 
             # Deterministic doc ID: re-importing overwrites rather than
