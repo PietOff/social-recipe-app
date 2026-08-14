@@ -1051,6 +1051,44 @@ function HomeContent() {
                 </div>
               </div>
 
+              {/* Bulk action bar. Sits above the grid and sticks to the top of
+                  the viewport: below the grid it was unreachable without
+                  scrolling past every recipe in the cookbook. */}
+              {selectMode && bulkSelected.size > 0 && (
+                <div className={styles.bulkBar}>
+                  <span style={{ opacity: 0.8, whiteSpace: 'nowrap' }}>{bulkSelected.size} selected</span>
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    <button
+                      onClick={() => handleExportPdf(savedRecipes.filter(r => bulkSelected.has(recipeKey(r))), false)}
+                      className={styles.button}
+                      style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: 'rgba(255,255,255,0.12)' }}
+                      title="Export the selected recipes as one PDF, one recipe per page"
+                    >
+                      🖨️ Export PDF
+                    </button>
+                    <button
+                      onClick={() => handleExportPdf(savedRecipes.filter(r => bulkSelected.has(recipeKey(r))), true)}
+                      className={styles.button}
+                      style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: 'rgba(255,255,255,0.12)' }}
+                      title="Export as a cookbook PDF: cover page, table of contents and recipes grouped by category"
+                    >
+                      📖 Cookbook PDF
+                    </button>
+                    <button
+                      onClick={() => {
+                        const recipes = savedRecipes.filter(r => bulkSelected.has(recipeKey(r)));
+                        handleShare(recipes).then(() => { setSelectMode(false); setBulkSelected(new Set()); });
+                      }}
+                      className={styles.button}
+                      disabled={shareLoading}
+                      style={{ padding: '0.5rem 1.2rem', fontSize: '0.9rem' }}
+                    >
+                      🔗 {shareLoading ? 'Creating link...' : 'Share selected'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Filter Chips */}
               <div className={styles.filterContainer}>
                 <button
@@ -1151,41 +1189,6 @@ function HomeContent() {
                 )}
               </div>
 
-              {/* Bulk action bar */}
-              {selectMode && bulkSelected.size > 0 && (
-                <div className={styles.bulkBar}>
-                  <span style={{ opacity: 0.8, whiteSpace: 'nowrap' }}>{bulkSelected.size} selected</span>
-                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                    <button
-                      onClick={() => handleExportPdf(savedRecipes.filter(r => bulkSelected.has(recipeKey(r))), false)}
-                      className={styles.button}
-                      style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: 'rgba(255,255,255,0.12)' }}
-                      title="Export the selected recipes as one PDF, one recipe per page"
-                    >
-                      🖨️ Export PDF
-                    </button>
-                    <button
-                      onClick={() => handleExportPdf(savedRecipes.filter(r => bulkSelected.has(recipeKey(r))), true)}
-                      className={styles.button}
-                      style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: 'rgba(255,255,255,0.12)' }}
-                      title="Export as a cookbook PDF: cover page, table of contents and recipes grouped by category"
-                    >
-                      📖 Cookbook PDF
-                    </button>
-                    <button
-                      onClick={() => {
-                        const recipes = savedRecipes.filter(r => bulkSelected.has(recipeKey(r)));
-                        handleShare(recipes).then(() => { setSelectMode(false); setBulkSelected(new Set()); });
-                      }}
-                      className={styles.button}
-                      disabled={shareLoading}
-                      style={{ padding: '0.5rem 1.2rem', fontSize: '0.9rem' }}
-                    >
-                      🔗 {shareLoading ? 'Creating link...' : 'Share selected'}
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
           )}
         </div>

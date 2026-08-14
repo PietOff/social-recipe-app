@@ -271,18 +271,23 @@
   cursor: text;
 }
 
+/* Pinned to the top of the viewport while scrolling the grid. It used to sit
+   below the grid with `bottom: 1rem`, which put it past every recipe in the
+   cookbook - unreachable once you have a few hundred. */
 .bulkBar {
   position: sticky;
-  bottom: 1rem;
+  top: 0.5rem;
+  z-index: 30;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  background: rgba(20, 20, 40, 0.95);
+  flex-wrap: wrap;
+  background: rgba(20, 20, 40, 0.97);
   border: 1px solid rgba(255, 107, 53, 0.4);
   border-radius: 14px;
   padding: 0.75rem 1rem;
-  margin-top: 1rem;
+  margin-bottom: 1rem;
   backdrop-filter: blur(12px);
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
 }

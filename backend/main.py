@@ -405,6 +405,22 @@ def tiktok_page_extract(url: str) -> dict:
     return out
 
 
+def _clean_caption(text: str) -> str:
+    """Normalizes Instagram caption whitespace.
+
+    Instagram composes captions with U+2028 LINE SEPARATOR (and occasionally
+    U+2029) rather than newlines, so an ingredient list arrives as one run-on
+    line - "Ingredients: - Chorizo - Baguette - Provolone" - which is much
+    harder for the parser to split into items than a real list.
+    """
+    text = text.replace("\u2028", "\n").replace("\u2029", "\n")
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def instagram_page_extract(url: str) -> dict:
     """Pulls the full caption and thumbnail from Instagram's embed page.
 
@@ -439,9 +455,13 @@ def instagram_page_extract(url: str) -> dict:
         if not cap:
             cap = re.search(r'<div class="Caption"[^>]*>(.*?)</div>', html_text, re.DOTALL)
         if cap:
-            text = re.sub(r"<br\s*/?>", "\n", cap.group(1))
+            block = cap.group(1)
+            # The block opens with the poster's handle as a link; keeping it made
+            # the username the first line of the "caption".
+            block = re.sub(r'<a class="CaptionUsername".*?</a>', "", block, flags=re.DOTALL)
+            text = re.sub(r"<br\s*/?>", "\n", block)
             text = re.sub(r"<[^>]+>", " ", text)
-            out["desc"] = html.unescape(text).strip()
+            out["desc"] = _clean_caption(html.unescape(text))
 
         # Route 2: caption text inside the page JSON (plain or string-escaped).
         if not out["desc"]:
@@ -450,7 +470,7 @@ def instagram_page_extract(url: str) -> dict:
                 html_text)
             if mm:
                 try:
-                    out["desc"] = json.loads(f'"{mm.group(1)}"').strip()
+                    out["desc"] = _clean_caption(json.loads(f'"{mm.group(1)}"'))
                 except Exception:
                     pass
         if not out["desc"]:
@@ -461,7 +481,7 @@ def instagram_page_extract(url: str) -> dict:
                     media = (ctx_data.get("gql_data") or {}).get("shortcode_media") or {}
                     edges = (media.get("edge_media_to_caption") or {}).get("edges") or []
                     if edges:
-                        out["desc"] = (edges[0].get("node") or {}).get("text", "").strip()
+                        out["desc"] = _clean_caption((edges[0].get("node") or {}).get("text", ""))
                     if not out["thumbnail"]:
                         out["thumbnail"] = media.get("display_url", "") or ""
                 except Exception as e_ctx:
