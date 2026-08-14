@@ -26,6 +26,8 @@ import {
   isSameRecipe,
   videoIdFromUrl,
   thumbnailSrc,
+  loadFailedImportIds,
+  clearFailedImportIds,
 } from '../lib/recipes';
 import { useCollectionImport, CollectionVideo } from '../hooks/useCollectionImport';
 import { exportRecipesToPdf } from '../lib/printExport';
@@ -51,6 +53,8 @@ function HomeContent() {
   const [classifying, setClassifying] = useState(false);
   const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(new Set());
   const [importedVideoIds, setImportedVideoIds] = useState<Set<string>>(new Set());
+  // Videos that previously extracted to zero ingredients; skipped on later runs.
+  const [failedVideoIds, setFailedVideoIds] = useState<Set<string>>(new Set());
   const { progress: importProgress, start: startImport, cancel: cancelImport, resume: resumeImport, dismiss: dismissImport, resumable } = useCollectionImport();
   const cookbookScrollY = React.useRef(0);
   const [cookbookLoading, setCookbookLoading] = useState(false);
@@ -98,6 +102,7 @@ function HomeContent() {
     if (storedIds) {
       try { setImportedVideoIds(new Set(JSON.parse(storedIds))); } catch { /* ignore */ }
     }
+    setFailedVideoIds(loadFailedImportIds());
 
     // 1. Immediately hydrate from cache (for instant visibility)
     const cachedCookbook = localStorage.getItem('chefSocial_cached_cookbook');
@@ -264,6 +269,9 @@ function HomeContent() {
     setUserMenuOpen(false);
     setImportedVideoIds(new Set());
     localStorage.removeItem('chefSocial_imported_video_ids');
+    // Also forget videos that failed with "no ingredients", so they get retried.
+    clearFailedImportIds();
+    setFailedVideoIds(new Set());
   };
 
   const saveRecipe = async (recipeToSave: Recipe) => {
@@ -379,11 +387,15 @@ function HomeContent() {
         if (collectionData && collectionData.is_collection && (collectionData.count ?? 0) > 0) {
           const videos: CollectionVideo[] = collectionData.videos ?? [];
           setCollectionVideos(videos);
-          setCollectionTitle(collectionData.collection_title || 'TikTok Collection');
+          setCollectionTitle(collectionData.collection_title || 'Collection');
           setLoading(false);
 
           setClassifying(true);
-          const selectAll = () => new Set(videos.map(v => v.video_id ?? v.url));
+          // Fresh read: an import may have recorded new failures since mount.
+          const failedNow = loadFailedImportIds();
+          setFailedVideoIds(failedNow);
+          const withoutFailed = (ids: Set<string>) => new Set([...ids].filter(k => !failedNow.has(k)));
+          const selectAll = () => withoutFailed(new Set(videos.map(v => v.video_id ?? v.url)));
           try {
             // Chunked: asking one LLM call to emit hundreds of JSON objects
             // risks truncation, which silently marked every video as a recipe.
@@ -411,7 +423,7 @@ function HomeContent() {
                 chunks[i].forEach(v => recipeIds.add(v.video_id ?? v.url));
               }
             });
-            setSelectedVideoIds(recipeIds.size > 0 ? recipeIds : selectAll());
+            setSelectedVideoIds(recipeIds.size > 0 ? withoutFailed(recipeIds) : selectAll());
           } catch {
             setSelectedVideoIds(selectAll());
           } finally {
@@ -783,7 +795,7 @@ function HomeContent() {
                           {selectedVideoIds.size} of {collectionVideos.length} selected
                         </span>
                         <div style={{ display: 'flex', gap: '0.5rem' }}>
-                          <button onClick={() => setSelectedVideoIds(new Set(collectionVideos.filter(v => !importedVideoIds.has(v.video_id ?? v.url)).map(v => v.video_id ?? v.url)))} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>All</button>
+                          <button onClick={() => setSelectedVideoIds(new Set(collectionVideos.filter(v => !importedVideoIds.has(v.video_id ?? v.url) && !failedVideoIds.has(v.video_id ?? v.url)).map(v => v.video_id ?? v.url)))} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>All</button>
                           <span style={{ opacity: 0.4 }}>|</span>
                           <button onClick={() => setSelectedVideoIds(new Set())} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>None</button>
                         </div>
@@ -793,15 +805,17 @@ function HomeContent() {
                         {collectionVideos.map((v, i) => {
                           const key = v.video_id ?? v.url;
                           const alreadyImported = importedVideoIds.has(key);
+                          const failedBefore = !alreadyImported && failedVideoIds.has(key);
+                          const unavailable = alreadyImported || failedBefore;
                           const checked = selectedVideoIds.has(key);
                           return (
-                            <label key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.4rem 0.6rem', borderRadius: '8px', background: checked ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)', cursor: alreadyImported ? 'default' : 'pointer', opacity: alreadyImported ? 0.35 : checked ? 1 : 0.5 }}>
+                            <label key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.4rem 0.6rem', borderRadius: '8px', background: checked ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)', cursor: unavailable ? 'default' : 'pointer', opacity: unavailable ? 0.35 : checked ? 1 : 0.5 }}>
                               <input
                                 type="checkbox"
                                 checked={checked}
-                                disabled={alreadyImported}
+                                disabled={unavailable}
                                 onChange={() => {
-                                  if (alreadyImported) return;
+                                  if (unavailable) return;
                                   setSelectedVideoIds(prev => {
                                     const next = new Set(prev);
                                     checked ? next.delete(key) : next.add(key);
@@ -815,6 +829,9 @@ function HomeContent() {
                               </span>
                               {alreadyImported && (
                                 <span style={{ fontSize: '0.75rem', opacity: 0.6, flexShrink: 0 }}>already saved</span>
+                              )}
+                              {failedBefore && (
+                                <span style={{ fontSize: '0.75rem', opacity: 0.6, flexShrink: 0 }}>no recipe found</span>
                               )}
                             </label>
                           );

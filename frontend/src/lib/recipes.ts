@@ -2,11 +2,42 @@ import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Recipe } from '../types';
 
-/** Pulls the numeric video id out of a TikTok URL. */
+/** Pulls the platform video id out of a TikTok (numeric) or YouTube
+ *  (11-char; watch?v=, youtu.be, /shorts/, /embed/) URL. Must stay in sync
+ *  with the backend's `video_id_from_url` so doc ids match. */
 export function videoIdFromUrl(url?: string | null): string | null {
   if (!url) return null;
-  const m = url.match(/\/video\/(\d+)/);
-  return m ? m[1] : null;
+  const tiktok = url.match(/\/video\/(\d+)/);
+  if (tiktok) return tiktok[1];
+  const youtube = url.match(/(?:[?&]v=|youtu\.be\/|\/shorts\/|\/embed\/)([A-Za-z0-9_-]{11})/);
+  return youtube ? youtube[1] : null;
+}
+
+// --- Failed-import memory ---------------------------------------------------
+// Videos that went through extraction but yielded no ingredients are almost
+// always not recipes at all. Remembering them means the next import run skips
+// them instead of paying for the same failed extraction again.
+
+const FAILED_IDS_KEY = 'chefSocial_failed_video_ids';
+
+export function loadFailedImportIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(FAILED_IDS_KEY);
+    return raw ? new Set<string>(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+export function recordFailedImportId(key: string): void {
+  try {
+    const next = [...new Set([...loadFailedImportIds(), key])];
+    localStorage.setItem(FAILED_IDS_KEY, JSON.stringify(next.slice(-2000)));
+  } catch { /* quota - non-fatal */ }
+}
+
+export function clearFailedImportIds(): void {
+  try { localStorage.removeItem(FAILED_IDS_KEY); } catch { /* ignore */ }
 }
 
 async function sha1Hex(input: string): Promise<string> {

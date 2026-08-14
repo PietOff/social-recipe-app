@@ -3,7 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Recipe } from '../types';
 import { apiPost, ApiError } from '../lib/api';
-import { saveRecipeToCloud, recipeExistsInCloud, videoIdFromUrl } from '../lib/recipes';
+import {
+  saveRecipeToCloud,
+  recipeExistsInCloud,
+  videoIdFromUrl,
+  loadFailedImportIds,
+  recordFailedImportId,
+} from '../lib/recipes';
 
 export type CollectionVideo = {
   url: string;
@@ -123,6 +129,10 @@ export function useCollectionImport() {
 
     const byId = new Map(job.videos.map(v => [idOf(v), v]));
     const queue = [...job.remaining];
+    // Videos that previously extracted to zero ingredients are (almost always)
+    // not recipes; skip them instead of paying for the same failure again.
+    // "Reset Import Cache" in the user menu clears this memory for a retry.
+    const failedBefore = loadFailedImportIds();
 
     setProgress({
       total: job.videos.length,
@@ -171,6 +181,10 @@ export function useCollectionImport() {
         while (attempt < MAX_ATTEMPTS && !controller.signal.aborted) {
           attempt += 1;
           try {
+            if (failedBefore.has(id)) {
+              finish(id, 'skipped', label, 'Skipped - no recipe was found in this video on a previous run');
+              break;
+            }
             if (await recipeExistsInCloud(job.uid, { video_id: video.video_id, source_url: video.url })) {
               finish(id, 'skipped', label);
               break;
@@ -181,6 +195,7 @@ export function useCollectionImport() {
             recipe.video_id = recipe.video_id || video.video_id || videoIdFromUrl(video.url) || undefined;
 
             if (!recipe.ingredients?.length) {
+              recordFailedImportId(id);
               finish(id, 'failed', label, 'No ingredients could be extracted');
               break;
             }

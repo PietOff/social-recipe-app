@@ -196,10 +196,20 @@ def stable_recipe_id(user_id: str, video_id: Optional[str], url: str) -> str:
 
 
 TIKTOK_VIDEO_ID_RE = re.compile(r"/video/(\d+)")
+# watch?v=, youtu.be/, /shorts/ and /embed/ all carry the same 11-char id.
+YOUTUBE_VIDEO_ID_RE = re.compile(r"(?:[?&]v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})")
 
 
 def video_id_from_url(url: str) -> Optional[str]:
+    """Stable platform video id (TikTok numeric or YouTube 11-char), or None.
+
+    Giving YouTube recipes a video id means the deterministic doc id keys on
+    the video rather than the URL text, so youtu.be and youtube.com/watch
+    forms of the same video de-duplicate."""
     m = TIKTOK_VIDEO_ID_RE.search(url or "")
+    if m:
+        return m.group(1)
+    m = YOUTUBE_VIDEO_ID_RE.search(url or "")
     return m.group(1) if m else None
 
 
@@ -286,6 +296,28 @@ class Recipe(typing_extensions.TypedDict):
 
 
 
+# Optional yt-dlp cookies (Netscape cookies.txt content via env var) to get
+# past YouTube's datacenter-IP bot checks. Written once to a private temp file
+# because yt-dlp only accepts a file path.
+_YTDLP_COOKIE_FILE: Optional[str] = None
+_ytdlp_cookies = os.getenv("YTDLP_COOKIES", "")
+if _ytdlp_cookies.strip():
+    try:
+        _fd, _cookie_path = tempfile.mkstemp(prefix="ytdlp_cookies_", suffix=".txt")
+        with os.fdopen(_fd, "w") as _f:
+            _f.write(_ytdlp_cookies)
+        _YTDLP_COOKIE_FILE = _cookie_path
+        logger.info("yt-dlp cookie file configured from YTDLP_COOKIES.")
+    except Exception as _e:
+        logger.warning(f"Could not write yt-dlp cookie file: {_e}")
+
+
+def _is_youtube(url: str) -> bool:
+    host = _hostname(url)
+    host = host[4:] if host.startswith("www.") else host
+    return host in ("youtu.be", "youtube.com") or host.endswith(".youtube.com")
+
+
 TIKTOK_SCOPES = ("webapp.reflow.video.detail", "webapp.video-detail")
 
 
@@ -348,6 +380,74 @@ def tiktok_page_extract(url: str) -> dict:
     return out
 
 
+def youtube_page_extract(url: str) -> dict:
+    """Pulls title, full description, thumbnail and captions from the watch page.
+
+    yt-dlp needs YouTube's player API, which frequently rejects datacenter IPs
+    ("confirm you're not a robot") - the reason YouTube extraction has been the
+    flakiest of the three platforms. The plain watch page is served far more
+    reliably and embeds `ytInitialPlayerResponse`, which carries the full
+    (untruncated) description plus URLs for the manual/auto captions, so both
+    the caption text and the narration can be read without the player API.
+    """
+    out = {"title": "", "desc": "", "thumbnail": "", "subtitles": ""}
+    try:
+        headers = {
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+            "Accept-Language": "en-US,en;q=0.9",
+            # Skips the EU consent interstitial, which hides the player JSON.
+            "Cookie": "CONSENT=YES+1; SOCS=CAI",
+        }
+        html_text = requests.get(url, headers=headers, timeout=15).text
+        idx = html_text.find("ytInitialPlayerResponse")
+        if idx == -1:
+            return out
+        brace = html_text.find("{", idx)
+        if brace == -1:
+            return out
+        # raw_decode parses exactly one JSON object and ignores the JS after it.
+        player, _ = json.JSONDecoder().raw_decode(html_text[brace:])
+
+        details = player.get("videoDetails", {}) or {}
+        out["title"] = details.get("title", "") or ""
+        out["desc"] = details.get("shortDescription", "") or ""
+        thumbs = (details.get("thumbnail", {}) or {}).get("thumbnails", []) or []
+        if thumbs:
+            out["thumbnail"] = thumbs[-1].get("url", "") or ""
+
+        tracks = (player.get("captions", {})
+                  .get("playerCaptionsTracklistRenderer", {})
+                  .get("captionTracks", [])) or []
+
+        def rank(track: dict):
+            lang = str(track.get("languageCode", "")).lower()
+            lang_rank = 0 if lang.startswith("en") else (1 if lang.startswith("nl") else 2)
+            manual_rank = 1 if str(track.get("kind", "")) == "asr" else 0
+            return (lang_rank, manual_rank)
+
+        for track in sorted(tracks, key=rank):
+            sub_url = track.get("baseUrl") or ""
+            if sub_url.startswith("/"):
+                sub_url = "https://www.youtube.com" + sub_url
+            if not _host_allowed(sub_url):
+                continue
+            try:
+                sep = "&" if "?" in sub_url else "?"
+                vtt = requests.get(f"{sub_url}{sep}fmt=vtt", headers=headers, timeout=15)
+                if vtt.status_code == 200 and vtt.text.strip():
+                    out["subtitles"] = clean_vtt(vtt.text)
+                    logger.info(
+                        f"YouTube captions: {track.get('languageCode')} "
+                        f"kind={track.get('kind') or 'manual'} -> {len(out['subtitles'])} chars")
+                    break
+            except Exception as e_sub:
+                logger.warning(f"YouTube caption fetch failed: {e_sub}")
+    except Exception as e:
+        logger.warning(f"YouTube page extraction failed: {e}")
+    return out
+
+
 def resolve_redirects(url: str) -> str:
     """
     Expands short URLs (like vm.tiktok.com) to their full canonical form.
@@ -405,6 +505,20 @@ def get_video_data(url: str, extract_audio: bool = False):
                         f"subtitles={len(page['subtitles'])} chars")
             return combined, thumb, None
 
+    # YouTube primary path: full description + captions from the watch page.
+    # The player API yt-dlp depends on is frequently bot-blocked on server IPs,
+    # while the watch page itself is served normally.
+    if _is_youtube(url) and not extract_audio:
+        page = youtube_page_extract(url)
+        if page["desc"] or page["subtitles"]:
+            title = page["title"] or "YouTube video"
+            combined = f"Title: {title}\nDescription: {page['desc']}"
+            if page["subtitles"]:
+                combined += f"\n\n[SUBTITLES/CAPTIONS - spoken narration]:\n{page['subtitles']}"
+            logger.info(f"YouTube page path: desc={len(page['desc'])} chars, "
+                        f"subtitles={len(page['subtitles'])} chars")
+            return combined, page["thumbnail"], None
+
     # 1. Base options for metadata
     ydl_opts = {
         'skip_download': True,
@@ -426,7 +540,9 @@ def get_video_data(url: str, extract_audio: bool = False):
         },
         'socket_timeout': 30,
     }
-    
+    if _YTDLP_COOKIE_FILE:
+        ydl_opts['cookiefile'] = _YTDLP_COOKIE_FILE
+
     # 2. Add audio extraction options if requested
     temp_dir = tempfile.gettempdir()
     # Ensure subtitles have a predictable filename pattern
@@ -975,8 +1091,9 @@ def is_thin_content(raw_text: str) -> bool:
 
 
 def is_collection_url(url: str) -> bool:
-    """Detects if a URL points to a TikTok collection/playlist."""
-    return bool(re.search(r'tiktok\.com/@[^/]+/collection/', url))
+    """Detects if a URL points to a TikTok collection or YouTube playlist."""
+    return bool(re.search(r'tiktok\.com/@[^/]+/collection/', url)
+                or re.search(r'youtube\.com/playlist\?', url))
 
 
 class ClassifyRequest(BaseModel):
@@ -1012,7 +1129,7 @@ def classify_recipes(request: ClassifyRequest, _rl: None = Depends(rate_limit)):
         for i, v in enumerate(request.videos)
     )
 
-    prompt = f"""Classify each TikTok video title below as a cooking/recipe video or not.
+    prompt = f"""Classify each social media video title below as a cooking/recipe video or not.
 Recipe = anything involving food preparation, ingredients, cooking techniques, or meals.
 Not a recipe = vlogs, challenges, reactions, day-in-my-life, hauls, travel, dance, etc.
 If the title is missing or ambiguous, default to true.
@@ -1037,7 +1154,7 @@ Return ONLY this JSON object (one entry per video, same order):
 @app.post("/extract-collection")
 def extract_collection(request: ExtractRequest, _rl: None = Depends(rate_limit)):
     """
-    Extracts all video URLs from a TikTok collection URL.
+    Extracts all video URLs from a TikTok collection or YouTube playlist URL.
     Returns list of individual video URLs to be processed one by one.
     """
     resolved_url = assert_supported_url(request.url)
@@ -1048,6 +1165,9 @@ def extract_collection(request: ExtractRequest, _rl: None = Depends(rate_limit))
         'quiet': True,
         'no_warnings': True,
         'ignoreerrors': True,
+        # A watch URL that merely carries a ?list= param must stay a single
+        # video; only true /playlist URLs should expand into their entries.
+        'noplaylist': True,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
             'Accept-Language': 'en-US,en;q=0.9',
@@ -1056,6 +1176,8 @@ def extract_collection(request: ExtractRequest, _rl: None = Depends(rate_limit))
             'tiktok': {'webpage_download': True},
         },
     }
+    if _YTDLP_COOKIE_FILE:
+        ydl_opts['cookiefile'] = _YTDLP_COOKIE_FILE
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -1075,11 +1197,14 @@ def extract_collection(request: ExtractRequest, _rl: None = Depends(rate_limit))
         if not entry:
             continue
         video_id = entry.get('id', '')
-        # Build canonical TikTok URL from the entry
+        # Build a canonical platform URL from the entry when yt-dlp gives none
         webpage_url = entry.get('webpage_url') or entry.get('url', '')
         if not webpage_url.startswith('http') and video_id:
-            uploader = entry.get('uploader_id') or entry.get('uploader', 'unknown')
-            webpage_url = f"https://www.tiktok.com/@{uploader}/video/{video_id}"
+            if _is_youtube(resolved_url):
+                webpage_url = f"https://www.youtube.com/watch?v={video_id}"
+            else:
+                uploader = entry.get('uploader_id') or entry.get('uploader', 'unknown')
+                webpage_url = f"https://www.tiktok.com/@{uploader}/video/{video_id}"
         videos.append({
             'url': webpage_url,
             'title': entry.get('title'),
@@ -1334,6 +1459,7 @@ THUMB_TTL_SECONDS = int(os.getenv("THUMB_TTL_SECONDS", "3600"))
 _THUMB_CACHE: dict = {}
 _THUMB_HITS: dict = defaultdict(deque)
 VIDEO_ID_RE = re.compile(r"^\d{5,32}$")
+YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
 def thumb_rate_limit(request: Request) -> None:
@@ -1369,7 +1495,15 @@ def resolve_tiktok_thumbnail(video_id: str) -> Optional[str]:
 
 @app.get("/thumbnail")
 def thumbnail(video_id: str, _rl: None = Depends(thumb_rate_limit)):
+    # YouTube ids (11 chars, contain letters) map to a stable, predictable
+    # thumbnail URL - no resolving or caching needed. TikTok ids are numeric.
     if not VIDEO_ID_RE.match(video_id or ""):
+        if YOUTUBE_ID_RE.match(video_id or ""):
+            return RedirectResponse(
+                f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+                status_code=302,
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
         raise HTTPException(status_code=400, detail="Invalid video id.")
 
     now = time.time()
@@ -1409,6 +1543,7 @@ def health_check():
             "gemini": bool(os.getenv("GEMINI_API_KEY")),
             "groq": bool(os.getenv("GROQ_API_KEY")),
             "firebase_admin": bool(firebase_admin._apps),
+            "ytdlp_cookies": bool(_YTDLP_COOKIE_FILE),
         },
         "llm_chain": ([f"gemini:{GEMINI_MODEL}"] if os.getenv("GEMINI_API_KEY") else [])
                      + ([f"groq:{m}" for m in GROQ_MODELS] if os.getenv("GROQ_API_KEY") else []),
