@@ -22,6 +22,11 @@ services:
       # YouTube's datacenter-IP bot checks (export from a logged-in browser).
       - key: YTDLP_COOKIES
         sync: false
+      # Optional: Instagram session cookie header (e.g. "sessionid=...; ds_user_id=...").
+      # Instagram may serve a caption-less embed shell to datacenter IPs;
+      # presenting a real session makes it return the full page.
+      - key: INSTAGRAM_COOKIES
+        sync: false
       - key: RATE_LIMIT_PER_MIN
         value: "20"
     plan: free

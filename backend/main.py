@@ -405,6 +405,43 @@ def tiktok_page_extract(url: str) -> dict:
     return out
 
 
+# Optional Instagram session cookies. Instagram increasingly serves a
+# caption-less embed shell to datacenter IPs; presenting a real session makes
+# it return the full page, exactly like the YTDLP_COOKIES escape hatch.
+INSTAGRAM_COOKIES = os.getenv("INSTAGRAM_COOKIES", "").strip()
+
+_IG_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+
+def _instagram_fetch_embed(shortcode: str):
+    """Fetches the embed page, mimicking a real third-party embed request.
+
+    Sent as a browser would when rendering an <iframe> embed: a normal UA, a
+    Referer, and Sec-Fetch-* headers announcing an iframe navigation. Without
+    these Instagram is markedly more likely to return a caption-less shell.
+    """
+    headers = {
+        "User-Agent": _IG_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.instagram.com/",
+        "Sec-Fetch-Dest": "iframe",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "cross-site",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    if INSTAGRAM_COOKIES:
+        headers["Cookie"] = INSTAGRAM_COOKIES
+    try:
+        return requests.get(
+            f"https://www.instagram.com/p/{shortcode}/embed/captioned/",
+            headers=headers, timeout=15)
+    except Exception as e:
+        logger.warning(f"Instagram embed fetch failed: {e}")
+        return None
+
+
 def _clean_caption(text: str) -> str:
     """Normalizes Instagram caption whitespace.
 
@@ -431,23 +468,30 @@ def instagram_page_extract(url: str) -> dict:
     for third-party embeds, is served without auth, and carries the whole
     caption both as rendered HTML and inside its context JSON.
     """
-    out = {"desc": "", "thumbnail": ""}
+    out = {"desc": "", "thumbnail": "", "diag": {}}
     m = INSTAGRAM_POST_RE.search(unquote(url))
     if not m:
+        out["diag"]["error"] = "no shortcode in URL"
         return out
     shortcode = m.group(2)
     try:
-        headers = {
-            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
-            "Accept-Language": "en-US,en;q=0.9",
+        r = _instagram_fetch_embed(shortcode)
+        out["diag"] = {
+            "shortcode": shortcode,
+            "status": r.status_code if r is not None else None,
+            "bytes": len(r.text) if r is not None else 0,
+            "authenticated": bool(INSTAGRAM_COOKIES),
         }
-        r = requests.get(
-            f"https://www.instagram.com/p/{shortcode}/embed/captioned/",
-            headers=headers, timeout=15)
-        if r.status_code != 200 or not r.text:
+        if r is None or r.status_code != 200 or not r.text:
             return out
         html_text = r.text
+        out["diag"].update({
+            "has_caption_block": '<div class="Caption"' in html_text,
+            "has_context_json": '"contextJSON"' in html_text,
+            "has_edge_caption": "edge_media_to_caption" in html_text,
+            "looks_like_login": ("accounts/login" in html_text
+                                 and '<div class="Caption"' not in html_text),
+        })
 
         # Route 1: the rendered caption block.
         cap = re.search(r'<div class="Caption"[^>]*>(.*?)<div class="CaptionComments"',
@@ -646,7 +690,11 @@ def get_video_data(url: str, extract_audio: bool = False):
         if page["desc"]:
             title = page["desc"].split("\n")[0][:80] or "Instagram video"
             combined = f"Title: {title}\nDescription: {page['desc']}"
+            logger.info(f"Instagram embed path: caption={len(page['desc'])} chars")
             return combined, page["thumbnail"], None
+        # Loudly record *why* nothing came back - this is the failure mode that
+        # is invisible from the client, which only ever sees "no recipe found".
+        logger.warning(f"Instagram embed yielded no caption: {page.get('diag')}")
 
     # 1. Base options for metadata
     ydl_opts = {
@@ -1662,6 +1710,33 @@ def thumbnail(video_id: str, _rl: None = Depends(thumb_rate_limit)):
     )
 
 
+@app.get("/debug/instagram")
+def debug_instagram(url: str, _rl: None = Depends(rate_limit)):
+    """Read-only diagnostic for Instagram extraction.
+
+    Extraction failures are invisible from the client, which only ever sees
+    "no recipe found" - and the embed page behaves differently for a browser
+    than for this server, so the failure cannot be reproduced locally. This
+    reports what Instagram actually returned here.
+
+    Safe by construction: the URL goes through the same host allowlist as
+    extraction (no SSRF), it is rate limited, it returns no credentials, and
+    the caption is truncated to a preview.
+    """
+    safe_url = canonicalize_source_url(assert_supported_url(url))
+    if not _is_instagram(safe_url):
+        raise HTTPException(status_code=400, detail="Not an Instagram URL.")
+    page = instagram_page_extract(safe_url)
+    caption = page.get("desc") or ""
+    return {
+        "resolved_url": safe_url,
+        "diagnostics": page.get("diag", {}),
+        "caption_chars": len(caption),
+        "caption_preview": caption[:400],
+        "thumbnail_found": bool(page.get("thumbnail")),
+    }
+
+
 @app.get("/")
 def health_check():
     return {
@@ -1673,6 +1748,7 @@ def health_check():
             "groq": bool(os.getenv("GROQ_API_KEY")),
             "firebase_admin": bool(firebase_admin._apps),
             "ytdlp_cookies": bool(_YTDLP_COOKIE_FILE),
+            "instagram_cookies": bool(INSTAGRAM_COOKIES),
         },
         "llm_chain": ([f"gemini:{GEMINI_MODEL}"] if os.getenv("GEMINI_API_KEY") else [])
                      + ([f"groq:{m}" for m in GROQ_MODELS] if os.getenv("GROQ_API_KEY") else []),
