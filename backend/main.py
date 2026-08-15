@@ -527,6 +527,8 @@ def instagram_page_extract(url: str) -> dict:
             try:
                 ctx_data = json.loads(json.loads(f'"{ctx.group(1)}"'))
                 media = (ctx_data.get("gql_data") or {}).get("shortcode_media") or {}
+                out["diag"]["context_parsed"] = True
+                out["diag"]["media_keys"] = sorted(media.keys())[:40]
                 if not out["desc"]:
                     edges = (media.get("edge_media_to_caption") or {}).get("edges") or []
                     if edges:
@@ -535,7 +537,21 @@ def instagram_page_extract(url: str) -> dict:
                     out["thumbnail"] = media.get("display_url", "") or ""
                 out["video_url"] = media.get("video_url", "") or ""
             except Exception as e_ctx:
+                out["diag"]["context_parsed"] = False
+                out["diag"]["context_error"] = f"{type(e_ctx).__name__}: {e_ctx}"[:200]
                 logger.warning(f"Instagram contextJSON parse failed: {e_ctx}")
+
+        # Last resort: the video URL sometimes appears only in the raw page,
+        # outside the context JSON we can decode.
+        if not out["video_url"]:
+            vm = re.search(r'"video_url":"((?:[^"\\]|\\.)+\.mp4[^"]*)"', html_text)
+            if vm:
+                try:
+                    candidate = json.loads(f'"{vm.group(1)}"')
+                except Exception:
+                    candidate = vm.group(1).replace("\\/", "/")
+                out["video_url"] = candidate
+                out["diag"]["video_url_via_regex"] = True
         out["diag"]["has_video_url"] = bool(out["video_url"])
 
         if not out["thumbnail"]:
@@ -1732,7 +1748,7 @@ def thumbnail(video_id: str, _rl: None = Depends(thumb_rate_limit)):
 
 
 @app.get("/debug/instagram")
-def debug_instagram(url: str, parse: bool = False, _rl: None = Depends(rate_limit)):
+def debug_instagram(url: str, parse: bool = False, video: bool = False, _rl: None = Depends(rate_limit)):
     """Read-only diagnostic for Instagram extraction.
 
     Extraction failures are invisible from the client, which only ever sees
@@ -1760,6 +1776,46 @@ def debug_instagram(url: str, parse: bool = False, _rl: None = Depends(rate_limi
     # ?parse=1 also runs the LLM step, so the whole chain can be checked end to
     # end. Extraction succeeding while parsing returns nothing looks identical
     # from the client - both surface as "no recipe found".
+    # ?video=1 exercises the media path: download the CDN video the embed page
+    # points at, pull the audio, and transcribe it. This is the only route to a
+    # recipe for reels whose caption withholds it, and it cannot be tested from
+    # a dev machine, so it needs to be checkable against production.
+    if video:
+        vinfo = {"video_url_found": bool(page.get("video_url"))}
+        work = tempfile.mkdtemp(prefix="dbg_")
+        try:
+            vurl = page.get("video_url") or ""
+            if vurl and is_safe_media_url(vurl):
+                vp = os.path.join(work, "v.mp4")
+                r = requests.get(vurl, stream=True, timeout=60, headers={
+                    "User-Agent": _IG_UA, "Referer": "https://www.instagram.com/"})
+                vinfo["http_status"] = r.status_code
+                n = 0
+                with open(vp, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        n += len(chunk)
+                        if n > MAX_VIDEO_BYTES:
+                            break
+                        f.write(chunk)
+                vinfo["downloaded_bytes"] = n
+                if n > 0:
+                    ap = os.path.join(work, "a.mp3")
+                    subprocess.run(["ffmpeg", "-i", vp, "-vn", "-acodec", "libmp3lame", "-y", ap],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+                    vinfo["audio_extracted"] = os.path.exists(ap)
+                    gk = os.getenv("GROQ_API_KEY")
+                    if vinfo["audio_extracted"] and gk:
+                        t = transcribe_audio(ap, gk) or ""
+                        vinfo["transcript_chars"] = len(t)
+                        vinfo["transcript_preview"] = t[:400]
+            elif vurl:
+                vinfo["error"] = "video URL failed the media-host allowlist"
+        except Exception as e:
+            vinfo["error"] = f"{type(e).__name__}: {e}"[:200]
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        result["video"] = vinfo
+
     if parse and caption:
         title = caption.split("\n")[0][:80] or "Instagram video"
         recipe = parse_with_llm(f"Title: {title}\nDescription: {caption}", "")
