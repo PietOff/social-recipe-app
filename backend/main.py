@@ -1711,7 +1711,7 @@ def thumbnail(video_id: str, _rl: None = Depends(thumb_rate_limit)):
 
 
 @app.get("/debug/instagram")
-def debug_instagram(url: str, _rl: None = Depends(rate_limit)):
+def debug_instagram(url: str, parse: bool = False, _rl: None = Depends(rate_limit)):
     """Read-only diagnostic for Instagram extraction.
 
     Extraction failures are invisible from the client, which only ever sees
@@ -1728,13 +1728,28 @@ def debug_instagram(url: str, _rl: None = Depends(rate_limit)):
         raise HTTPException(status_code=400, detail="Not an Instagram URL.")
     page = instagram_page_extract(safe_url)
     caption = page.get("desc") or ""
-    return {
+    result = {
         "resolved_url": safe_url,
         "diagnostics": page.get("diag", {}),
         "caption_chars": len(caption),
         "caption_preview": caption[:400],
         "thumbnail_found": bool(page.get("thumbnail")),
     }
+
+    # ?parse=1 also runs the LLM step, so the whole chain can be checked end to
+    # end. Extraction succeeding while parsing returns nothing looks identical
+    # from the client - both surface as "no recipe found".
+    if parse and caption:
+        title = caption.split("\n")[0][:80] or "Instagram video"
+        recipe = parse_with_llm(f"Title: {title}\nDescription: {caption}", "")
+        result["parsed"] = {
+            "title": recipe.get("title"),
+            "ingredient_count": len(recipe.get("ingredients") or []),
+            "instruction_count": len(recipe.get("instructions") or []),
+            "tags": recipe.get("tags") or [],
+            "has_content": recipe_has_content(recipe),
+        }
+    return result
 
 
 @app.get("/")
