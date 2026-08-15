@@ -468,7 +468,7 @@ def instagram_page_extract(url: str) -> dict:
     for third-party embeds, is served without auth, and carries the whole
     caption both as rendered HTML and inside its context JSON.
     """
-    out = {"desc": "", "thumbnail": "", "diag": {}}
+    out = {"desc": "", "thumbnail": "", "video_url": "", "diag": {}}
     m = INSTAGRAM_POST_RE.search(unquote(url))
     if not m:
         out["diag"]["error"] = "no shortcode in URL"
@@ -517,19 +517,26 @@ def instagram_page_extract(url: str) -> dict:
                     out["desc"] = _clean_caption(json.loads(f'"{mm.group(1)}"'))
                 except Exception:
                     pass
-        if not out["desc"]:
-            ctx = re.search(r'"contextJSON"\s*:\s*"((?:[^"\\]|\\.)*)"', html_text)
-            if ctx:
-                try:
-                    ctx_data = json.loads(json.loads(f'"{ctx.group(1)}"'))
-                    media = (ctx_data.get("gql_data") or {}).get("shortcode_media") or {}
+        # The context JSON also carries a direct CDN video URL. That is the only
+        # route to the audio and frames of a reel whose caption withholds the
+        # recipe ("comment RECIPE and I'll send you the link"), because the post
+        # page itself is login-walled - so parse it even when the caption
+        # already came from the rendered block.
+        ctx = re.search(r'"contextJSON"\s*:\s*"((?:[^"\\]|\\.)*)"', html_text)
+        if ctx:
+            try:
+                ctx_data = json.loads(json.loads(f'"{ctx.group(1)}"'))
+                media = (ctx_data.get("gql_data") or {}).get("shortcode_media") or {}
+                if not out["desc"]:
                     edges = (media.get("edge_media_to_caption") or {}).get("edges") or []
                     if edges:
                         out["desc"] = _clean_caption((edges[0].get("node") or {}).get("text", ""))
-                    if not out["thumbnail"]:
-                        out["thumbnail"] = media.get("display_url", "") or ""
-                except Exception as e_ctx:
-                    logger.warning(f"Instagram contextJSON parse failed: {e_ctx}")
+                if not out["thumbnail"]:
+                    out["thumbnail"] = media.get("display_url", "") or ""
+                out["video_url"] = media.get("video_url", "") or ""
+            except Exception as e_ctx:
+                logger.warning(f"Instagram contextJSON parse failed: {e_ctx}")
+        out["diag"]["has_video_url"] = bool(out["video_url"])
 
         if not out["thumbnail"]:
             img = re.search(r'class="EmbeddedMediaImage"[^>]*\bsrc="([^"]+)"', html_text)
@@ -1449,39 +1456,53 @@ def extract_recipe(request: ExtractRequest, _rl: None = Depends(rate_limit)):
     work_dir = tempfile.mkdtemp(prefix="vision_")
     try:
         headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1"}
-        html_resp = requests.get(safe_url, headers=headers, timeout=10)
-        if html_resp.status_code == 200:
-            direct_url = extract_direct_video_url(safe_url, html_resp.text)
-            if direct_url and is_safe_media_url(direct_url):
-                temp_vid_path = os.path.join(work_dir, "video.mp4")
-                vid_resp = requests.get(direct_url, stream=True, timeout=30)
-                downloaded = 0
-                with open(temp_vid_path, "wb") as f:
-                    for chunk in vid_resp.iter_content(chunk_size=8192):
-                        downloaded += len(chunk)
-                        if downloaded > MAX_VIDEO_BYTES:
-                            raise Exception("Video exceeds size limit; aborting vision fallback.")
-                        f.write(chunk)
 
-                # Audio straight from the downloaded file, in case stage 2's
-                # yt-dlp audio download was the part that failed.
-                if groq_api_key and not transcript.strip():
-                    temp_audio_path = os.path.join(work_dir, "audio.mp3")
-                    subprocess.run(
-                        ["ffmpeg", "-i", temp_vid_path, "-vn", "-acodec", "libmp3lame", "-y", temp_audio_path],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120,
-                    )
-                    if os.path.exists(temp_audio_path):
-                        t2 = transcribe_audio(temp_audio_path, groq_api_key)
-                        if t2 and t2.strip():
-                            raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{t2.strip()}"
-                            added_visual = True
+        # Instagram's post page is login-walled, so scraping it for a video URL
+        # never worked. The embed page we can already read exposes one directly.
+        direct_url = None
+        if _is_instagram(safe_url):
+            direct_url = instagram_page_extract(safe_url).get("video_url") or None
+            if direct_url:
+                logger.info("Instagram: using embed-page video URL for audio/vision")
+        if not direct_url:
+            html_resp = requests.get(safe_url, headers=headers, timeout=10)
+            if html_resp.status_code == 200:
+                direct_url = extract_direct_video_url(safe_url, html_resp.text)
 
-                frames = extract_frames(temp_vid_path)
-                visual_desc = analyze_visuals_with_gemini(frames, os.getenv("GEMINI_API_KEY") or "")
-                if visual_desc and visual_desc.strip():
-                    raw_text += visual_desc
-                    added_visual = True
+        if direct_url and is_safe_media_url(direct_url):
+            temp_vid_path = os.path.join(work_dir, "video.mp4")
+            # cdninstagram rejects requests without a plausible browser
+            # Referer/UA pair.
+            vid_resp = requests.get(
+                direct_url, stream=True, timeout=60,
+                headers={**headers, "Referer": "https://www.instagram.com/"})
+            downloaded = 0
+            with open(temp_vid_path, "wb") as f:
+                for chunk in vid_resp.iter_content(chunk_size=8192):
+                    downloaded += len(chunk)
+                    if downloaded > MAX_VIDEO_BYTES:
+                        raise Exception("Video exceeds size limit; aborting vision fallback.")
+                    f.write(chunk)
+
+            # Audio straight from the downloaded file, in case stage 2's
+            # yt-dlp audio download was the part that failed.
+            if groq_api_key and not transcript.strip():
+                temp_audio_path = os.path.join(work_dir, "audio.mp3")
+                subprocess.run(
+                    ["ffmpeg", "-i", temp_vid_path, "-vn", "-acodec", "libmp3lame", "-y", temp_audio_path],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120,
+                )
+                if os.path.exists(temp_audio_path):
+                    t2 = transcribe_audio(temp_audio_path, groq_api_key)
+                    if t2 and t2.strip():
+                        raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{t2.strip()}"
+                        added_visual = True
+
+            frames = extract_frames(temp_vid_path)
+            visual_desc = analyze_visuals_with_gemini(frames, os.getenv("GEMINI_API_KEY") or "")
+            if visual_desc and visual_desc.strip():
+                raw_text += visual_desc
+                added_visual = True
     except Exception as e_vision:
         logger.warning(f"Vision fallback failed: {e_vision}")
     finally:
