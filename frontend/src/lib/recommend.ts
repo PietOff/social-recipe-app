@@ -70,13 +70,31 @@ function relevanceScore(recipe: Recipe, terms: string[]): number {
   return terms.reduce((score, term) => (text.includes(term) ? score + 1 : score), 0);
 }
 
-export function prefilter(recipes: Recipe[], wanted: string): Recipe[] {
-  if (recipes.length <= MAX_CANDIDATES) return recipes;
+/** Fisher-Yates on a copy. */
+function shuffled<T>(items: T[]): T[] {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
 
+export function prefilter(recipes: Recipe[], wanted: string): Recipe[] {
   const terms = wanted
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(t => t.length > 2);
+
+  // "Surprise me" has nothing to rank by, so every recipe scores zero and the
+  // order stays as saved - meaning the same handful off the top of the cookbook
+  // every single time, and never the other 250. Shuffle instead. The backend
+  // trims from the head to fit the prompt, so the head is what must vary.
+  if (terms.length === 0) {
+    return shuffled(recipes).slice(0, MAX_CANDIDATES);
+  }
+
+  if (recipes.length <= MAX_CANDIDATES) return recipes;
 
   // Stable: score descending, original order preserved within a score.
   return recipes
