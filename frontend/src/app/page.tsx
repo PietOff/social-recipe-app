@@ -30,6 +30,9 @@ import {
   clearFailedImportIds,
 } from '../lib/recipes';
 import { useCollectionImport, CollectionVideo } from '../hooks/useCollectionImport';
+import { addPendingSync, flushPendingSync, loadPendingSync, mergeSynced } from '../lib/sync';
+import { MOOD_CHIPS, recommendFromCookbook, Suggestion } from '../lib/recommend';
+import { hasLabel, labelFacets, labelValues } from '../lib/labels';
 import { exportRecipesToPdf } from '../lib/printExport';
 
 interface User {
@@ -46,6 +49,7 @@ function HomeContent() {
   const [error, setError] = useState<string | null>(null);
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [savedRecipes, setSavedRecipes] = useState<Recipe[]>([]);
+  const savedRecipesRef = React.useRef<Recipe[]>([]);
 
   // Collection import state
   const [collectionVideos, setCollectionVideos] = useState<CollectionVideo[] | null>(null);
@@ -59,11 +63,17 @@ function HomeContent() {
   const cookbookScrollY = React.useRef(0);
   const [cookbookLoading, setCookbookLoading] = useState(false);
   const [cookbookError, setCookbookError] = useState<string | null>(null);
+  // Recipes that were saved while signed in but never reached Firestore.
+  const [pendingSync, setPendingSync] = useState<Recipe[]>([]);
+  const [syncing, setSyncing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuRef = React.useRef<HTMLDivElement>(null);
+
+  // Mirrors savedRecipes for callbacks that outlive the render they were made in.
+  React.useEffect(() => { savedRecipesRef.current = savedRecipes; }, [savedRecipes]);
 
   // Close user menu on outside click
   React.useEffect(() => {
@@ -76,9 +86,6 @@ function HomeContent() {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [userMenuOpen]);
-
-  // Helper to migrate legacy single-category recipes
-  const categoryToTags = (cat: string) => [cat];
 
   // Validate that a URL points to a supported recipe source before hitting the API.
   const isSupportedRecipeUrl = (raw: string): boolean => {
@@ -103,6 +110,7 @@ function HomeContent() {
       try { setImportedVideoIds(new Set(JSON.parse(storedIds))); } catch { /* ignore */ }
     }
     setFailedVideoIds(loadFailedImportIds());
+    setPendingSync(loadPendingSync());
 
     // 1. Immediately hydrate from cache (for instant visibility)
     const cachedCookbook = localStorage.getItem('chefSocial_cached_cookbook');
@@ -170,15 +178,40 @@ function HomeContent() {
           video_id: data.video_id || null,
         });
       });
+      // An empty result is only trustworthy when it came from the server AND we
+      // had nothing to begin with.
+      //
+      // getDocs() falls back to the SDK's offline cache when it cannot reach
+      // Firestore, and resolves successfully - so a moment of bad signal on a
+      // phone yields an EMPTY snapshot with no error, indistinguishable from
+      // "this account has no recipes". The old code then wrote that emptiness
+      // over chefSocial_cached_cookbook, destroying the only local copy. That is
+      // how a 318-recipe cookbook rendered as "No recipes saved yet".
+      const known = savedRecipesRef.current;
+      if (recipes.length === 0 && known.length > 0) {
+        setCookbookError(
+          querySnapshot.metadata.fromCache
+            ? 'Could not reach the database just now - showing your saved copy. Pull down to retry.'
+            : `The database returned no recipes, but ${known.length} are saved on this device. ` +
+              'Keeping them rather than clearing your cookbook - reload to try again.',
+        );
+        return; // Leave savedRecipes and the cache exactly as they are.
+      }
+
       // Sort client-side (no index required)
       setSavedRecipes(recipes);
-      localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(recipes));
+      if (!querySnapshot.metadata.fromCache || recipes.length > 0) {
+        localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(recipes));
+      }
 
       // Hydrate imported IDs from the cloud to prevent duplicates across devices
       const cloudIds = new Set(
         recipes.map(r => r.video_id || videoIdFromUrl(r.source_url) || r.source_url).filter(Boolean) as string[]
       );
       setImportedVideoIds(prev => new Set([...prev, ...cloudIds]));
+
+      // The database is reachable, so anything stuck in the queue can go up now.
+      await retryPendingSync(uid, recipes);
     } catch (e: any) {
       console.error('Failed to fetch cloud recipes', e);
       if (e.code === 'permission-denied') {
@@ -188,6 +221,39 @@ function HomeContent() {
       }
     } finally {
       setCookbookLoading(false);
+    }
+  };
+
+  /**
+   * Re-pushes recipes whose cloud write failed earlier. Saves are idempotent
+   * (deterministic doc ids), so a recipe that did land is simply overwritten.
+   */
+  const retryPendingSync = async (uid: string, base?: Recipe[]) => {
+    if (loadPendingSync().length === 0) {
+      setPendingSync([]);
+      return;
+    }
+    setSyncing(true);
+    try {
+      const { synced, remaining, lastError } = await flushPendingSync(uid);
+      setPendingSync(remaining);
+      if (synced.length > 0) {
+        setSavedRecipes(prev => {
+          const next = mergeSynced(base ?? prev, synced);
+          localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(next));
+          return next;
+        });
+      }
+      if (remaining.length > 0) {
+        setCookbookError(
+          `${remaining.length} recipe${remaining.length === 1 ? '' : 's'} could not be saved to the cloud` +
+          `${lastError ? ` (${lastError})` : ''}. They are on this device only.`,
+        );
+      } else if (synced.length > 0) {
+        setCookbookError(null);
+      }
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -221,6 +287,7 @@ function HomeContent() {
           localStorage.removeItem('chefSocial_cookbook'); // Clear local after migration
         } catch (e) {
           console.error('Migration failed:', e);
+          setCookbookError('Some recipes from this device could not be uploaded. They are still saved locally.');
         }
       }
 
@@ -310,13 +377,49 @@ function HomeContent() {
             return next;
           });
         } catch (e) {
+          // Never silently: a save that only reached localStorage looks
+          // identical to a real one until you open the app on another device.
           console.error('Cloud save failed, kept locally', e);
           localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(optimistic));
+          setPendingSync(addPendingSync(recipeToSave));
+          setCookbookError(
+            `"${recipeToSave.title || 'Recipe'}" saved on this device only - it could not reach the cloud, ` +
+            `so it will not show up on your other devices yet.`,
+          );
         }
       } else {
         localStorage.setItem('chefSocial_cookbook', JSON.stringify(optimistic));
       }
     }
+  };
+
+  const handleSuggest = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (savedRecipes.length === 0) return;
+    setSuggestLoading(true);
+    setSuggestError(null);
+    setHasSuggested(true);
+    try {
+      const result = await recommendFromCookbook(savedRecipes, [...selectedMoods], moodText.trim());
+      setSuggestions(result.results);
+      setSuggestIntro(result.intro);
+      setSuggestConsidered({ considered: result.considered, total: result.total });
+    } catch (err: any) {
+      setSuggestions([]);
+      setSuggestIntro('');
+      setSuggestError(err?.message || 'Could not get a suggestion right now.');
+    } finally {
+      setSuggestLoading(false);
+    }
+  };
+
+  const clearMood = () => {
+    setSelectedMoods(new Set());
+    setMoodText('');
+    setSuggestions([]);
+    setSuggestIntro('');
+    setSuggestError(null);
+    setHasSuggested(false);
   };
 
   const extractSingleRecipe = async (videoUrl: string): Promise<Recipe> =>
@@ -549,7 +652,20 @@ function HomeContent() {
   };
 
   // --- VIEW STATE ---
-  const [view, setView] = useState<'home' | 'cookbook' | 'details'>('home');
+  const [view, setView] = useState<'home' | 'cookbook' | 'details' | 'suggest'>('home');
+
+  // --- "What am I feeling like?" ---
+  const [selectedMoods, setSelectedMoods] = useState<Set<string>>(new Set());
+  const [moodText, setMoodText] = useState('');
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [suggestIntro, setSuggestIntro] = useState('');
+  const [suggestConsidered, setSuggestConsidered] = useState<{ considered: number; total: number } | null>(null);
+  const [suggestLoading, setSuggestLoading] = useState(false);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
+  const [hasSuggested, setHasSuggested] = useState(false);
+  const urlInputRef = React.useRef<HTMLInputElement>(null);
+  const searchInputRef = React.useRef<HTMLInputElement>(null);
+  const moodInputRef = React.useRef<HTMLInputElement>(null);
 
   // Close the open recipe / collection overlay on Escape
   React.useEffect(() => {
@@ -576,12 +692,17 @@ function HomeContent() {
   // --- FILTERING & BILINGUAL SEARCH ---
   const [selectedCategory, setSelectedCategory] = useState("All");
 
-  const MEAL_TYPES = ['Breakfast', 'Brunch', 'Lunch', 'Dinner', 'Snack', 'Dessert', 'Appetizer', 'Drink'];
-  const DISH_TYPES = [
-    'Airfryer', 'BBQ', 'Slow Cooker', 'Pasta', 'Pizza', 'Burger', 'Sandwich', 'Wrap', 'Tacos',
-    'Salad', 'Bowl', 'Soup', 'Stew', 'Curry', 'Rice', 'Meat', 'Fish', 'Chicken', 'Vegetarian', 'Vegan',
-    'Low-Carb', 'High-Protein', 'Smoothie', 'Cocktail', 'Sauce', 'Side'
-  ];
+  // Filter chips are derived from the saved recipes (own tags plus labels
+  // inferred from times, ingredients and method), ordered by coverage.
+  const cookbookFacets = React.useMemo(() => labelFacets(savedRecipes), [savedRecipes]);
+
+  // A chip can disappear when the cookbook changes; drop the filter rather than
+  // leaving the grid mysteriously empty.
+  React.useEffect(() => {
+    if (selectedCategory !== 'All' && !cookbookFacets.some(f => f.value === selectedCategory)) {
+      setSelectedCategory('All');
+    }
+  }, [cookbookFacets, selectedCategory]);
 
   const TRANSLATIONS: Record<string, string[]> = {
     'chicken': ['kip', 'gevogelte', 'poultry'],
@@ -622,16 +743,15 @@ function HomeContent() {
       const textToSearch = [
         r.title,
         r.description,
-        ...(r.tags || []),
-        r.category || ''
+        ...labelValues(r),
+        ...(r.ingredients || []).map(i => i?.item || ''),
       ].join(' ').toLowerCase();
 
       const matches = terms.some(term => textToSearch.includes(term));
       if (!matches) return false;
     }
     if (selectedCategory !== "All") {
-      const tags = (r.tags || (r.category ? categoryToTags(r.category) : [])).map(t => t.toLowerCase());
-      return tags.includes(selectedCategory.toLowerCase());
+      return hasLabel(r, selectedCategory);
     }
     return true;
   });
@@ -735,6 +855,16 @@ function HomeContent() {
             >
               📚 Cookbook
             </button>
+            <button
+              onClick={() => setView('suggest')}
+              className={styles.button}
+              style={{
+                background: view === 'suggest' ? 'var(--primary-gradient)' : 'rgba(255,255,255,0.1)',
+                opacity: view === 'suggest' ? 1 : 0.7
+              }}
+            >
+              ✨ What to cook
+            </button>
           </div>
         </header>
 
@@ -742,6 +872,25 @@ function HomeContent() {
 
           {/* Errors and the share-link toast render on every view: shares can
               be started from the cookbook too, where they used to be invisible. */}
+          {pendingSync.length > 0 && (
+            <div className={styles.syncWarning}>
+              <span>
+                ⚠️ {pendingSync.length} recipe{pendingSync.length === 1 ? '' : 's'} on this device
+                {' '}{pendingSync.length === 1 ? 'has' : 'have'} not reached the cloud, so
+                {' '}{pendingSync.length === 1 ? 'it will' : 'they will'} not appear on your other devices.
+              </span>
+              <button
+                type="button"
+                className={styles.button}
+                style={{ whiteSpace: 'nowrap', padding: '0.4rem 0.9rem', fontSize: '0.82rem' }}
+                disabled={syncing || !user}
+                onClick={() => user && retryPendingSync(user.id)}
+              >
+                {syncing ? 'Syncing...' : user ? 'Retry sync' : 'Sign in to sync'}
+              </button>
+            </div>
+          )}
+
           {error && <div className={styles.error}>{error}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>💡 Tip: Try using TikTok or Instagram links instead</small></>}</div>}
 
           {shareLink && (
@@ -759,19 +908,33 @@ function HomeContent() {
             <>
               {view === 'home' && (
                 <form onSubmit={handleExtract} className={styles.form}>
-                  <input
-                    type="url"
-                    inputMode="url"
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder="Paste TikTok, Instagram or YouTube link..."
-                    value={url}
-                    onChange={(e) => setUrl(e.target.value)}
-                    className={styles.input}
-                    required
-                  />
+                  <div className={styles.inputWrap}>
+                    <input
+                      ref={urlInputRef}
+                      type="url"
+                      inputMode="url"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="Paste TikTok, Instagram or YouTube link..."
+                      value={url}
+                      onChange={(e) => setUrl(e.target.value)}
+                      className={styles.input}
+                      required
+                    />
+                    {url && (
+                      <button
+                        type="button"
+                        className={styles.clearButton}
+                        aria-label="Clear the link"
+                        title="Clear"
+                        onClick={() => { setUrl(''); urlInputRef.current?.focus(); }}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
                   <button type="submit" disabled={loading} className={styles.button}>
                     {loading ? 'Extracting...' : 'Get Recipe'}
                   </button>
@@ -959,7 +1122,7 @@ function HomeContent() {
 
                   {/* Tags */}
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', margin: '10px 0' }}>
-                    {(recipe.tags || (recipe.category ? categoryToTags(recipe.category) : [])).map(tag => (
+                    {labelValues(recipe).map(tag => (
                       <span key={tag} style={{ background: 'rgba(255,255,255,0.2)', padding: '4px 10px', borderRadius: '12px', fontSize: '0.8rem' }}>
                         {tag}
                       </span>
@@ -1015,19 +1178,166 @@ function HomeContent() {
             </>
           )}
 
+          {/* VIEW: SUGGEST ("what am I feeling like?") */}
+          {view === 'suggest' && (
+            <div className={styles.cookbookSection}>
+              <div className={styles.recipeCard}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem' }}>
+                  <h2 style={{ margin: 0 }}>✨ What am I feeling like?</h2>
+                  {(selectedMoods.size > 0 || moodText || hasSuggested) && (
+                    <button type="button" onClick={clearMood} className={styles.textButton}>
+                      Reset
+                    </button>
+                  )}
+                </div>
+                <p style={{ opacity: 0.65, fontSize: '0.88rem', margin: '0.35rem 0 1rem' }}>
+                  Picks from the {savedRecipes.length} recipe{savedRecipes.length === 1 ? '' : 's'} in your
+                  cookbook - it only ever suggests something you have actually saved.
+                </p>
+
+                <div className={styles.filterContainer} style={{ paddingBottom: '0.6rem', marginBottom: '0.6rem' }}>
+                  {MOOD_CHIPS.map(chip => (
+                    <button
+                      key={chip}
+                      type="button"
+                      className={`${styles.filterChip} ${selectedMoods.has(chip) ? styles.filterChipActive : ''}`}
+                      onClick={() => setSelectedMoods(prev => {
+                        const next = new Set(prev);
+                        if (next.has(chip)) next.delete(chip); else next.add(chip);
+                        return next;
+                      })}
+                    >
+                      {chip}
+                    </button>
+                  ))}
+                </div>
+
+                <form onSubmit={handleSuggest} className={styles.form}>
+                  <div className={styles.inputWrap}>
+                    <input
+                      ref={moodInputRef}
+                      type="text"
+                      placeholder="Anything else? e.g. 'nothing heavy, no oven, 20 minutes'"
+                      value={moodText}
+                      onChange={(e) => setMoodText(e.target.value)}
+                      className={styles.input}
+                    />
+                    {moodText && (
+                      <button
+                        type="button"
+                        className={styles.clearButton}
+                        aria-label="Clear"
+                        title="Clear"
+                        onClick={() => { setMoodText(''); moodInputRef.current?.focus(); }}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                  <button type="submit" className={styles.button} disabled={suggestLoading || savedRecipes.length === 0}>
+                    {suggestLoading ? 'Thinking...' : selectedMoods.size === 0 && !moodText ? 'Surprise me' : 'Suggest'}
+                  </button>
+                </form>
+
+                {savedRecipes.length === 0 && (
+                  <p style={{ opacity: 0.6, fontSize: '0.88rem', marginTop: '1rem' }}>
+                    Save a few recipes first and this will have something to pick from.
+                  </p>
+                )}
+              </div>
+
+              {suggestError && <div className={styles.error} style={{ marginBottom: '1rem' }}>{suggestError}</div>}
+
+              {suggestIntro && !suggestLoading && (
+                <p style={{ opacity: 0.85, margin: '0 0 1rem', fontSize: '0.95rem' }}>{suggestIntro}</p>
+              )}
+
+              {suggestConsidered && suggestConsidered.considered < suggestConsidered.total && !suggestLoading && (
+                <p style={{ opacity: 0.5, margin: '-0.5rem 0 1rem', fontSize: '0.78rem' }}>
+                  Considered the {suggestConsidered.considered} most relevant of your {suggestConsidered.total} recipes.
+                </p>
+              )}
+
+              <div className={styles.cookbookGrid}>
+                {suggestions.map(({ recipe: suggested, reason }) => {
+                  const key = recipeKey(suggested);
+                  const thumb = thumbnailSrc(suggested);
+                  return (
+                    <div
+                      key={key}
+                      className={styles.cookbookItem}
+                      onClick={() => {
+                        cookbookScrollY.current = window.scrollY;
+                        setRecipe(suggested);
+                        setView('details');
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                      }}
+                    >
+                      <div className={styles.cookbookImage}>
+                        {thumb ? (
+                          <img
+                            src={thumb}
+                            alt={suggested.title}
+                            referrerPolicy="no-referrer"
+                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                              const siblingSpan = e.currentTarget.nextElementSibling as HTMLElement;
+                              if (siblingSpan) siblingSpan.style.display = 'block';
+                            }}
+                          />
+                        ) : null}
+                        <span style={{ fontSize: '2rem', display: thumb ? 'none' : 'block' }}>🍳</span>
+                      </div>
+                      <div className={styles.cookbookContent}>
+                        <h4>{suggested.title}</h4>
+                        {reason && <p className={styles.suggestReason}>{reason}</p>}
+                        <div className={styles.tagsRow}>
+                          {labelValues(suggested).slice(0, 3).map(t => (
+                            <span key={t}>{t}</span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {hasSuggested && !suggestLoading && !suggestError && suggestions.length === 0 && savedRecipes.length > 0 && (
+                <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>
+                  Nothing in your cookbook really fits that. Try fewer chips, or different wording.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* VIEW: COOKBOOK */}
           {view === 'cookbook' && (
             <div className={styles.cookbookSection}>
               <div className={styles.cookbookHeader}>
                 <h2>My Cookbook ({savedRecipes.length})</h2>
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <input
-                    type="text"
-                    placeholder="Search (try 'Kip' or 'Chicken')..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className={styles.searchInput}
-                  />
+                  <div className={styles.searchWrap}>
+                    <input
+                      ref={searchInputRef}
+                      type="text"
+                      placeholder="Search (try 'Kip' or 'Chicken')..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className={styles.searchInput}
+                    />
+                    {searchQuery && (
+                      <button
+                        type="button"
+                        className={styles.clearButton}
+                        aria-label="Clear the search"
+                        title="Clear"
+                        onClick={() => { setSearchQuery(''); searchInputRef.current?.focus(); }}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
                   <button
                     onClick={() => { setSelectMode(p => !p); setBulkSelected(new Set()); }}
                     className={styles.button}
@@ -1097,23 +1407,18 @@ function HomeContent() {
                 >
                   All
                 </button>
-                {MEAL_TYPES.map(cat => (
+                {/* Chips come from what is actually saved, most common first, so
+                    every filter offered returns something. The old fixed list of
+                    ~34 chips was shown in full even when most matched nothing. */}
+                {cookbookFacets.map(facet => (
                   <button
-                    key={cat}
-                    className={`${styles.filterChip} ${selectedCategory === cat ? styles.filterChipActive : ''}`}
-                    onClick={() => setSelectedCategory(cat)}
+                    key={facet.value}
+                    className={`${styles.filterChip} ${selectedCategory === facet.value ? styles.filterChipActive : ''}`}
+                    onClick={() => setSelectedCategory(facet.value)}
+                    title={`${facet.count} recipe${facet.count === 1 ? '' : 's'}`}
                   >
-                    {cat}
-                  </button>
-                ))}
-                <div style={{ width: '1px', height: '24px', background: 'rgba(255,255,255,0.2)', margin: '0 4px' }}></div>
-                {DISH_TYPES.map(cat => (
-                  <button
-                    key={cat}
-                    className={`${styles.filterChip} ${selectedCategory === cat ? styles.filterChipActive : ''}`}
-                    onClick={() => setSelectedCategory(cat)}
-                  >
-                    {cat}
+                    {facet.value}
+                    <span className={styles.chipCount}>{facet.count}</span>
                   </button>
                 ))}
               </div>
@@ -1169,7 +1474,7 @@ function HomeContent() {
                       <div className={styles.cookbookContent}>
                         <h4>{r.title}</h4>
                         <div className={styles.tagsRow}>
-                          {(r.tags || (r.category ? categoryToTags(r.category) : [])).slice(0, 3).map(t => (
+                          {labelValues(r).slice(0, 3).map(t => (
                             <span key={t}>{t}</span>
                           ))}
                         </div>
