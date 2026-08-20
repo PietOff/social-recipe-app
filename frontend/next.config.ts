@@ -7,6 +7,9 @@ const BACKEND_URL = (
 ).trim();
 
 const nextConfig: NextConfig = {
+  // Next 16.3 writes AGENTS.md / CLAUDE.md into the project on dev start.
+  // This repo keeps agent scaffolding out of the tree, so opt out.
+  agentRules: false,
   async rewrites() {
     return [
       {
