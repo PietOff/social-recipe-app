@@ -1351,6 +1351,121 @@ Return ONLY this JSON object (one entry per video, same order):
         return {"results": [{"video_id": v.get("video_id", str(i)), "is_recipe": True} for i, v in enumerate(request.videos)]}
 
 
+# --- Recommendations -------------------------------------------------------
+# "What am I feeling like?" - ranks the user's OWN saved cookbook against a
+# free-text mood plus any tapped mood chips. Deliberately never invents a dish:
+# every pick must be an id the client sent, so a suggestion is always something
+# the user can actually open and cook.
+
+
+class RecommendCandidate(BaseModel):
+    id: str
+    title: str = ""
+    description: str = ""
+    tags: List[str] = []
+    prep_time: Optional[str] = None
+    cook_time: Optional[str] = None
+    servings: Optional[str] = None
+    ingredients: List[str] = []
+
+
+class RecommendRequest(BaseModel):
+    mood: str = ""
+    moods: List[str] = []
+    recipes: List[RecommendCandidate] = []
+    limit: int = 5
+
+
+MAX_RECOMMEND_CANDIDATES = 300
+MAX_RECOMMEND_PICKS = 8
+
+
+def _candidate_line(index: int, c: RecommendCandidate) -> str:
+    """One compact line per recipe. Kept short so a 300-recipe cookbook still
+    fits comfortably in a single prompt."""
+    bits = [f"[{c.id}] {(c.title or 'Untitled')[:90]}"]
+    if c.tags:
+        bits.append("tags: " + ", ".join(t[:24] for t in c.tags[:6]))
+    times = " + ".join(t for t in [c.prep_time, c.cook_time] if t)
+    if times:
+        bits.append("time: " + times[:40])
+    if c.servings:
+        bits.append(f"serves: {str(c.servings)[:16]}")
+    if c.ingredients:
+        bits.append("ingredients: " + ", ".join(i[:28] for i in c.ingredients[:10]))
+    elif c.description:
+        bits.append(c.description[:120])
+    return f"{index}. " + " | ".join(bits)
+
+
+@app.post("/recommend")
+def recommend(request: RecommendRequest, _rl: None = Depends(rate_limit)):
+    """Picks a handful of recipes from the caller's cookbook that fit a mood."""
+    if not request.recipes:
+        return {"intro": "", "picks": []}
+
+    if not (os.getenv("GEMINI_API_KEY") or os.getenv("GROQ_API_KEY")):
+        raise HTTPException(status_code=503, detail="No LLM provider configured on the server.")
+
+    if len(request.recipes) > MAX_RECOMMEND_CANDIDATES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Too many recipes in one request. Send at most {MAX_RECOMMEND_CANDIDATES}.",
+        )
+
+    limit = max(1, min(request.limit or 5, MAX_RECOMMEND_PICKS))
+
+    wanted = " ".join(filter(None, [", ".join(request.moods), request.mood])).strip()
+    if not wanted:
+        wanted = "no particular preference - surprise me with something good"
+
+    listing = "\n".join(_candidate_line(i + 1, c) for i, c in enumerate(request.recipes))
+
+    prompt = f"""The user is deciding what to cook tonight. In their own words:
+
+"{wanted}"
+
+Here is their entire saved cookbook. Pick the {limit} recipes that best fit.
+
+{listing}
+
+Rules:
+- Only ever return ids that appear in the list above, copied exactly. Never invent a dish.
+- Order the picks best-fit first.
+- "reason" is one short sentence (max 18 words) saying why THIS recipe fits what they asked for.
+  Be concrete - name the ingredient, the cooking time or the flavour that makes it a match.
+- If nothing really fits, return fewer picks rather than padding with bad ones.
+- "intro" is one friendly sentence (max 20 words) summarising the pick. No greeting, no emoji.
+
+Return ONLY this JSON object:
+{{"intro": "string", "picks": [{{"id": "string", "reason": "string"}}]}}"""
+
+    try:
+        data = generate_json(prompt, "You are a JSON-only API. Return only valid JSON.")
+    except Exception as e:
+        raise_if_quota(e)
+        raise
+
+    # Trust nothing: an id the client did not send would render as a dead card.
+    known = {c.id for c in request.recipes}
+    picks, seen = [], set()
+    for p in (data or {}).get("picks", []) or []:
+        if not isinstance(p, dict):
+            continue
+        rid = str(p.get("id", "")).strip()
+        if rid not in known or rid in seen:
+            continue
+        seen.add(rid)
+        picks.append({"id": rid, "reason": str(p.get("reason", "")).strip()[:200]})
+        if len(picks) >= limit:
+            break
+
+    if not picks:
+        logger.warning("Recommendation returned no usable ids for mood: %s", wanted[:120])
+
+    return {"intro": str((data or {}).get("intro", "")).strip()[:200], "picks": picks}
+
+
 @app.post("/extract-collection")
 def extract_collection(request: ExtractRequest, _rl: None = Depends(rate_limit)):
     """
