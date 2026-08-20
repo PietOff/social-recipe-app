@@ -14,6 +14,8 @@ export default function RecipeCard({ recipe, onSave, isSaved }: RecipeCardProps)
             {recipe.image_url && (
                 <div className={styles.imageContainer}>
                     <img
+                        loading="lazy"
+                        decoding="async"
                         src={recipe.image_url}
                         alt={recipe.title}
                         className={styles.image}
