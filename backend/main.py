@@ -1071,6 +1071,17 @@ def _groq_json(prompt: str, system: str, api_key: str, model: str) -> str:
     return response.choices[0].message.content
 
 
+class PromptTooLarge(Exception):
+    """Every provider refused the prompt for its size. Callers that can rebuild
+    a smaller prompt should catch this and retry; the rest let it surface as the
+    generic failure."""
+
+
+def is_too_large(e: Exception) -> bool:
+    msg = str(e).lower()
+    return "413" in msg or "request too large" in msg or "payload too large" in msg
+
+
 def is_transient(e: Exception) -> bool:
     """Overload or gateway errors that are worth one immediate retry. Deliberately
     excludes 429 (quota - handled separately) and 413 (the prompt will not shrink
@@ -1106,6 +1117,7 @@ def generate_json(prompt: str, system: str) -> dict:
 
     attempts = []
     quota_scopes = []
+    too_large = False
     for name, call in providers:
         for attempt in range(2):
             try:
@@ -1125,10 +1137,17 @@ def generate_json(prompt: str, system: str) -> dict:
                 scope = quota_scope(e)
                 if scope:
                     quota_scopes.append(scope)
+                if is_too_large(e):
+                    too_large = True
                 attempts.append(f"{name}: {'quota:' + scope if scope else str(e)[:150]}")
                 break
 
     logger.error(f"All LLM providers failed: {' | '.join(attempts)}")
+    if too_large:
+        # Groq's free tier is 8k tokens per minute across both gpt-oss models,
+        # and two attempts land in the same minute - so the survivable prompt is
+        # a good deal smaller than one request's worth. Let the caller shrink.
+        raise PromptTooLarge(" | ".join(attempts))
     if quota_scopes and len(quota_scopes) == len(providers):
         # Every provider is rate limited. Prefer the least severe scope so the
         # client retries shortly rather than pausing for the day when it needn't.
@@ -1458,7 +1477,12 @@ MAX_RECOMMEND_CANDIDATES = 300
 # rejects outright with "413 Request too large" - so a Gemini blip took the whole
 # feature down with it. The listing is trimmed to fit the smallest provider in
 # the chain: detail goes first, then the tail of the list.
-RECOMMEND_LISTING_CHAR_BUDGET = int(os.getenv("RECOMMEND_LISTING_CHAR_BUDGET", "24000"))
+# Groq's free tier allows 8000 tokens per minute, shared across both gpt-oss
+# models - and the chain tries both inside the same minute, so each attempt gets
+# well under half of that. 9000 characters is roughly 2200 tokens of listing,
+# leaving room for the instructions and the reply. Measured, not guessed: 24000
+# produced "413 Request too large" from both models.
+RECOMMEND_LISTING_CHAR_BUDGET = int(os.getenv("RECOMMEND_LISTING_CHAR_BUDGET", "9000"))
 MAX_RECOMMEND_PICKS = 8
 
 
@@ -1482,16 +1506,17 @@ def _candidate_line(index: int, c: RecommendCandidate, detail: bool = True) -> s
     return f"{index}. " + " | ".join(bits)
 
 
-def _build_listing(candidates: list) -> tuple:
+def _build_listing(candidates: list, budget: int = 0) -> tuple:
     """Renders the cookbook listing within the character budget.
 
     Returns (listing, considered). Drops per-recipe detail before it drops
     recipes, because knowing about more of the cookbook matters more to the
     quality of a pick than knowing each one in depth.
     """
+    budget = budget or RECOMMEND_LISTING_CHAR_BUDGET
     for detail in (True, False):
         lines = [_candidate_line(i + 1, c, detail) for i, c in enumerate(candidates)]
-        if sum(len(l) + 1 for l in lines) <= RECOMMEND_LISTING_CHAR_BUDGET:
+        if sum(len(l) + 1 for l in lines) <= budget:
             return "\n".join(lines), len(candidates)
 
     # Still too long without detail: keep the highest-ranked head of the list.
@@ -1500,11 +1525,32 @@ def _build_listing(candidates: list) -> tuple:
     kept, total = [], 0
     for i, c in enumerate(candidates):
         line = _candidate_line(i + 1, c, False)
-        if total + len(line) + 1 > RECOMMEND_LISTING_CHAR_BUDGET:
+        if total + len(line) + 1 > budget:
             break
         kept.append(line)
         total += len(line) + 1
     return "\n".join(kept), len(kept)
+
+
+def _recommend_prompt(wanted: str, listing: str, limit: int) -> str:
+    return f"""The user is deciding what to cook tonight. In their own words:
+
+"{wanted}"
+
+Here is their saved cookbook. Pick the {limit} recipes that best fit.
+
+{listing}
+
+Rules:
+- Only ever return ids that appear in the list above, copied exactly. Never invent a dish.
+- Order the picks best-fit first.
+- "reason" is one short sentence (max 18 words) saying why THIS recipe fits what they asked for.
+  Be concrete - name the ingredient, the cooking time or the flavour that makes it a match.
+- If nothing really fits, return fewer picks rather than padding with bad ones.
+- "intro" is one friendly sentence (max 20 words) summarising the pick. No greeting, no emoji.
+
+Return ONLY this JSON object:
+{{"intro": "string", "picks": [{{"id": "string", "reason": "string"}}]}}"""
 
 
 @app.post("/recommend")
@@ -1528,37 +1574,37 @@ def recommend(request: RecommendRequest, _rl: None = Depends(rate_limit)):
     if not wanted:
         wanted = "no particular preference - surprise me with something good"
 
-    listing, considered = _build_listing(request.recipes)
-    if considered < len(request.recipes):
-        logger.info(
-            "Recommend listing trimmed to %d of %d recipes to fit the prompt budget",
-            considered, len(request.recipes),
-        )
+    def build_prompt(budget: int) -> tuple:
+        listing, considered = _build_listing(request.recipes, budget)
+        if considered < len(request.recipes):
+            logger.info(
+                "Recommend listing trimmed to %d of %d recipes (budget %d chars)",
+                considered, len(request.recipes), budget,
+            )
+        return _recommend_prompt(wanted, listing, limit), considered
 
-    prompt = f"""The user is deciding what to cook tonight. In their own words:
-
-"{wanted}"
-
-Here is their entire saved cookbook. Pick the {limit} recipes that best fit.
-
-{listing}
-
-Rules:
-- Only ever return ids that appear in the list above, copied exactly. Never invent a dish.
-- Order the picks best-fit first.
-- "reason" is one short sentence (max 18 words) saying why THIS recipe fits what they asked for.
-  Be concrete - name the ingredient, the cooking time or the flavour that makes it a match.
-- If nothing really fits, return fewer picks rather than padding with bad ones.
-- "intro" is one friendly sentence (max 20 words) summarising the pick. No greeting, no emoji.
-
-Return ONLY this JSON object:
-{{"intro": "string", "picks": [{{"id": "string", "reason": "string"}}]}}"""
-
-    try:
-        data = generate_json(prompt, "You are a JSON-only API. Return only valid JSON.")
-    except Exception as e:
-        raise_if_quota(e)
-        raise
+    # Providers disagree about how big a prompt may be, and Groq's limit moves
+    # with what the same minute has already spent. Rather than guess low for
+    # everyone, start at the budget and halve on refusal.
+    budget = RECOMMEND_LISTING_CHAR_BUDGET
+    data, considered = None, 0
+    for attempt in range(3):
+        prompt, considered = build_prompt(budget)
+        try:
+            data = generate_json(prompt, "You are a JSON-only API. Return only valid JSON.")
+            break
+        except PromptTooLarge as e:
+            if attempt == 2:
+                logger.error("Recommendation prompt still too large at %d chars: %s", budget, e)
+                raise HTTPException(
+                    status_code=500,
+                    detail="Your cookbook is too large for the recipe AI right now. Please try again in a minute.",
+                )
+            budget //= 2
+            logger.info("Prompt refused as too large; retrying at %d chars", budget)
+        except Exception as e:
+            raise_if_quota(e)
+            raise
 
     # Trust nothing: an id the client did not send would render as a dead card.
     known = {c.id for c in request.recipes}
