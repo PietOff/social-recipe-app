@@ -14,8 +14,11 @@ export const MOOD_CHIPS = [
   'Cooking to impress',
 ] as const;
 
-/** The backend refuses more than this, so a large cookbook is pre-filtered. */
-const MAX_CANDIDATES = 300;
+/** The backend refuses more than this, so a large cookbook is pre-filtered.
+ *  Kept well below the old 300: at 300 recipes with ingredients the prompt ran
+ *  past Groq's request limit, so a Gemini blip took the whole feature down with
+ *  a 413 instead of falling back. The backend trims further if it still has to. */
+const MAX_CANDIDATES = 150;
 
 export interface Pick {
   id: string;
@@ -40,7 +43,7 @@ function ingredientNames(recipe: Recipe): string[] {
   return (recipe.ingredients || [])
     .map(i => (i?.item || '').trim())
     .filter(Boolean)
-    .slice(0, 10);
+    .slice(0, 8);
 }
 
 /** Everything about a recipe that could plausibly match a mood, lowercased. */
@@ -96,7 +99,7 @@ export async function recommendFromCookbook(
 
   const byKey = new Map(candidates.map(r => [recipeKey(r), r]));
 
-  const response = await apiPost<{ intro?: string; picks?: Pick[] }>(
+  const response = await apiPost<{ intro?: string; picks?: Pick[]; considered?: number }>(
     '/recommend',
     {
       mood,
@@ -125,7 +128,10 @@ export async function recommendFromCookbook(
   return {
     intro: response.intro || '',
     results,
-    considered: candidates.length,
+    // The backend trims the listing further if the prompt would not fit, so
+    // trust its count over how many we sent - otherwise the UI overstates how
+    // much of the cookbook was actually read.
+    considered: Math.min(response.considered ?? candidates.length, candidates.length),
     total: usable.length,
   };
 }

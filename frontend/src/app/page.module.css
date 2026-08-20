@@ -209,11 +209,19 @@
   color: rgba(255, 255, 255, 0.4);
 }
 
+/* Vertical padding was 0, so every button in the app rendered ~32px tall -
+   under the 44px minimum comfortable tap target, and this is a phone-first
+   app. Height is set here once rather than patched per button. */
 .button {
   background: var(--primary-gradient);
   border: none;
   color: white;
-  padding: 0 1.5rem;
+  padding: 0.6rem 1.5rem;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
   border-radius: 12px;
   font-weight: 600;
   font-size: 1rem;
@@ -290,6 +298,35 @@
   margin-bottom: 1rem;
   backdrop-filter: blur(12px);
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+}
+
+.bulkCount {
+  opacity: 0.8;
+  white-space: nowrap;
+  font-size: 0.9rem;
+}
+
+.bulkActions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.bulkButton {
+  padding: 0.5rem 1rem;
+  font-size: 0.9rem;
+  background: rgba(255, 255, 255, 0.12);
+  min-height: 44px;
+}
+
+.bulkPrimary {
+  background: var(--primary-gradient);
+  padding: 0.5rem 1.2rem;
+}
+
+.bulkButton:disabled {
+  opacity: 0.45;
 }
 
 /* --- RECIPE CARD (Detail View) --- */
@@ -402,6 +439,59 @@
 .cookbookHeader h2 {
   font-size: 1.5rem;
   margin: 0;
+}
+
+/* The search field used to be an inline-flex sibling of the Select buttons with
+   no flex-grow, so on a phone it collapsed to "Search (try" - and to "Se" once
+   select mode added a third button. It now grows, and wraps to its own full
+   width row before it can be squeezed. */
+.cookbookTools {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  flex: 1 1 320px;
+  justify-content: flex-end;
+}
+
+.cookbookTools .searchWrap {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.toolButton {
+  white-space: nowrap;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.85rem;
+  background: rgba(255, 255, 255, 0.1);
+  min-height: 44px;
+}
+
+.selectHint {
+  margin: 0 0 1rem;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  opacity: 0.65;
+}
+
+/* Rubber-band selection rectangle. Viewport coordinates, so it is fixed. */
+.marquee {
+  position: fixed;
+  z-index: 40;
+  pointer-events: none;
+  border: 1px solid rgba(255, 107, 53, 0.9);
+  background: rgba(255, 107, 53, 0.18);
+  border-radius: 4px;
+}
+
+/* While select mode is on, suppress the lift-on-hover so a drag across cards
+   does not make the whole grid jump around under the finger. */
+.selectable {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.selectable:hover {
+  transform: none;
 }
 
 .searchInput {
@@ -856,10 +946,83 @@
   .searchInput {
     width: 100%;
     min-width: unset;
-    order: 3;
-    padding: 0.6rem 1rem;
-    font-size: 0.9rem;
+    padding: 0.7rem 1rem;
+    font-size: 1rem; /* keep 16px: anything smaller makes iOS zoom on focus */
     border-radius: 20px;
+  }
+
+  .cookbookTools {
+    flex: 1 1 100%;
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  /* Full width on its own line, above the buttons, so the placeholder is
+     never clipped no matter how many buttons select mode adds. */
+  .cookbookTools .searchWrap {
+    flex: 1 1 100%;
+    order: -1;
+  }
+
+  .toolButton {
+    flex: 1 1 0;
+    font-size: 0.9rem;
+    min-height: 44px;
+  }
+
+  /* Docked above the bottom nav, the way a photo picker does it. As a fixed
+     element it takes no space in the grid, so entering select mode and picking
+     recipes never move the cards. Three stacked full-width buttons at the top
+     used to push most of the cookbook off-screen. */
+  .bulkBar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: auto;
+    /* Clears the fixed bottom nav (0.6rem padding + 44px buttons + border).
+       The nav's own padding already absorbs the safe-area inset. */
+    bottom: calc(66px + env(safe-area-inset-bottom));
+    z-index: 190;
+    margin: 0;
+    border-radius: 16px 16px 0 0;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+    padding: 0.7rem 1rem;
+  }
+
+  .bulkCount {
+    text-align: center;
+    font-size: 0.85rem;
+  }
+
+  .bulkActions {
+    justify-content: stretch;
+    flex-wrap: nowrap;
+    gap: 0.4rem;
+  }
+
+  .bulkButton {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0.5rem 0.4rem;
+    font-size: 0.82rem;
+    min-height: 44px;
+  }
+
+  /* "Export PDF" / "Cookbook PDF" do not fit three-across on a phone. Drop the
+     trailing "PDF" rather than the distinguishing word - hiding "Export" and
+     "Cookbook" instead left two buttons both reading "PDF". */
+  .bulkLabel {
+    display: none;
+  }
+
+  /* Room for the docked bar so the last row of recipes stays reachable. */
+  .selectModeGrid {
+    padding-bottom: 9rem;
   }
 
   .cookbookGrid {
