@@ -171,9 +171,27 @@ _RATE_HITS: dict = defaultdict(deque)
 RATE_LIMIT_PER_MIN = int(os.getenv("RATE_LIMIT_PER_MIN", "20"))
 
 
+def client_ip(request: Request) -> str:
+    """The caller's own address, not the proxy's.
+
+    The frontend rewrites /api/* to this service, so every request arrives from
+    Vercel's egress IP. Keying a rate limiter on request.client.host therefore
+    put ALL users in one bucket - one person opening a large cookbook could
+    throttle everyone. X-Forwarded-For's first entry is the original client;
+    it is spoofable, but a per-client bucket that can be gamed is still strictly
+    better than a single global one.
+    """
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+    return request.client.host if request.client else "unknown"
+
+
 def rate_limit(request: Request, uid: Optional[str] = Depends(optional_user)) -> None:
     """Throttles per signed-in user, falling back to client IP for anonymous callers."""
-    identity = uid or (request.client.host if request.client else "unknown")
+    identity = uid or client_ip(request)
     now = time.time()
     with _RATE_LOCK:
         hits = _RATE_HITS[identity]
@@ -1794,7 +1812,7 @@ YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 def thumb_rate_limit(request: Request) -> None:
     """Separate, higher budget from the main API limiter: one cookbook page
     legitimately requests dozens of thumbnails at once."""
-    identity = request.client.host if request.client else "unknown"
+    identity = client_ip(request)
     now = time.time()
     with _RATE_LOCK:
         hits = _THUMB_HITS[identity]

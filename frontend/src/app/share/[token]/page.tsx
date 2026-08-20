@@ -96,7 +96,7 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
         {recipes.map((recipe, i) => (
           <div key={i} style={styles.recipeCard}>
             {thumbnailSrc(recipe) && (
-              <img src={thumbnailSrc(recipe)} alt={recipe.title} referrerPolicy="no-referrer" style={styles.image} onError={e => (e.currentTarget.style.display = 'none')} />
+              <img src={thumbnailSrc(recipe)} alt={recipe.title} loading="lazy" decoding="async" referrerPolicy="no-referrer" style={styles.image} onError={e => (e.currentTarget.style.display = 'none')} />
             )}
             <div style={{ padding: '1.25rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>

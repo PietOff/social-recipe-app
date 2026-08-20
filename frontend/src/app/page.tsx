@@ -1277,6 +1277,9 @@ function HomeContent() {
                         {thumb ? (
                           <img
                             src={thumb}
+                            loading="lazy"
+                            decoding="async"
+                            fetchPriority="low"
                             alt={suggested.title}
                             referrerPolicy="no-referrer"
                             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
@@ -1459,6 +1462,9 @@ function HomeContent() {
                         {thumb ? (
                           <img
                             src={thumb}
+                            loading="lazy"
+                            decoding="async"
+                            fetchPriority="low"
                             alt={r.title}
                             referrerPolicy="no-referrer"
                             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
