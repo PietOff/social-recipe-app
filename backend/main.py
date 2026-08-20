@@ -1035,8 +1035,12 @@ def raise_if_quota(err: Exception) -> None:
 # model that serves the request once the previous one is out of quota.
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# llama-3.1-8b-instant was decommissioned by Groq and now 404s on every call,
+# which silently cost this chain its last fallback. gpt-oss-20b is the smaller
+# current production model, and its lower request cost makes it a genuine
+# second chance when 120b refuses an oversized prompt.
 GROQ_MODELS = [m.strip() for m in os.getenv(
-    "GROQ_MODELS", "openai/gpt-oss-120b,llama-3.1-8b-instant").split(",") if m.strip()]
+    "GROQ_MODELS", "openai/gpt-oss-120b,openai/gpt-oss-20b").split(",") if m.strip()]
 
 
 def _gemini_json(prompt: str, system: str, api_key: str) -> str:
@@ -1067,6 +1071,14 @@ def _groq_json(prompt: str, system: str, api_key: str, model: str) -> str:
     return response.choices[0].message.content
 
 
+def is_transient(e: Exception) -> bool:
+    """Overload or gateway errors that are worth one immediate retry. Deliberately
+    excludes 429 (quota - handled separately) and 413 (the prompt will not shrink
+    on its own)."""
+    msg = str(e).lower()
+    return any(t in msg for t in ("503", "unavailable", "high demand", "overloaded", "502", "504"))
+
+
 def generate_json(prompt: str, system: str) -> dict:
     """Runs one prompt through the provider chain, returning parsed JSON.
 
@@ -1095,17 +1107,26 @@ def generate_json(prompt: str, system: str) -> dict:
     attempts = []
     quota_scopes = []
     for name, call in providers:
-        try:
-            data = json.loads(call())
-            if attempts:
-                logger.info(f"LLM fell through to {name} after: {' | '.join(attempts)}")
-            return data
-        except Exception as e:
-            scope = quota_scope(e)
-            if scope:
-                quota_scopes.append(scope)
-            attempts.append(f"{name}: {'quota:' + scope if scope else str(e)[:150]}")
-            continue
+        for attempt in range(2):
+            try:
+                data = json.loads(call())
+                if attempts:
+                    logger.info(f"LLM fell through to {name} after: {' | '.join(attempts)}")
+                return data
+            except Exception as e:
+                # "503 UNAVAILABLE - this model is currently experiencing high
+                # demand" is routine on flash models and clears in a second. One
+                # retry here is far cheaper than falling through to a weaker
+                # model, or than failing the whole request.
+                if attempt == 0 and is_transient(e):
+                    logger.info(f"{name} transient ({str(e)[:80]}); retrying once")
+                    time.sleep(1.0)
+                    continue
+                scope = quota_scope(e)
+                if scope:
+                    quota_scopes.append(scope)
+                attempts.append(f"{name}: {'quota:' + scope if scope else str(e)[:150]}")
+                break
 
     logger.error(f"All LLM providers failed: {' | '.join(attempts)}")
     if quota_scopes and len(quota_scopes) == len(providers):
@@ -1113,7 +1134,13 @@ def generate_json(prompt: str, system: str) -> dict:
         # client retries shortly rather than pausing for the day when it needn't.
         raise_if_quota(Exception(
             "RESOURCE_EXHAUSTED" if "minute" in quota_scopes else "RESOURCE_EXHAUSTED PerDay"))
-    raise HTTPException(status_code=500, detail=f"AI parsing failed. {' | '.join(attempts)}")
+    # The provider's own words are for the log, not the client: they carry the
+    # model name, raw API JSON and phrases like "API key not valid", none of
+    # which a cook can act on. The full chain is already logged above.
+    raise HTTPException(
+        status_code=500,
+        detail="The recipe AI is unavailable right now. Please try again in a moment.",
+    )
 
 
 def parse_with_llm(text_data: str, api_key: str):
@@ -1162,7 +1189,10 @@ def parse_with_llm(text_data: str, api_key: str):
     except Exception as e:
         raise_if_quota(e)
         logger.error(f"Gemini error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"AI parsing failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="The recipe AI is unavailable right now. Please try again in a moment.",
+        )
 
 # --- Endpoints ---
 
@@ -1423,12 +1453,19 @@ class RecommendRequest(BaseModel):
 
 
 MAX_RECOMMEND_CANDIDATES = 300
+
+# A 300-recipe listing with ingredients ran to ~100k characters, which Groq
+# rejects outright with "413 Request too large" - so a Gemini blip took the whole
+# feature down with it. The listing is trimmed to fit the smallest provider in
+# the chain: detail goes first, then the tail of the list.
+RECOMMEND_LISTING_CHAR_BUDGET = int(os.getenv("RECOMMEND_LISTING_CHAR_BUDGET", "24000"))
 MAX_RECOMMEND_PICKS = 8
 
 
-def _candidate_line(index: int, c: RecommendCandidate) -> str:
-    """One compact line per recipe. Kept short so a 300-recipe cookbook still
-    fits comfortably in a single prompt."""
+def _candidate_line(index: int, c: RecommendCandidate, detail: bool = True) -> str:
+    """One compact line per recipe. `detail=False` drops ingredients and the
+    description, roughly halving the line, for when the full listing will not
+    fit the provider's request limit."""
     bits = [f"[{c.id}] {(c.title or 'Untitled')[:90]}"]
     if c.tags:
         bits.append("tags: " + ", ".join(t[:24] for t in c.tags[:6]))
@@ -1437,11 +1474,37 @@ def _candidate_line(index: int, c: RecommendCandidate) -> str:
         bits.append("time: " + times[:40])
     if c.servings:
         bits.append(f"serves: {str(c.servings)[:16]}")
-    if c.ingredients:
-        bits.append("ingredients: " + ", ".join(i[:28] for i in c.ingredients[:10]))
-    elif c.description:
-        bits.append(c.description[:120])
+    if detail:
+        if c.ingredients:
+            bits.append("ingredients: " + ", ".join(i[:28] for i in c.ingredients[:8]))
+        elif c.description:
+            bits.append(c.description[:120])
     return f"{index}. " + " | ".join(bits)
+
+
+def _build_listing(candidates: list) -> tuple:
+    """Renders the cookbook listing within the character budget.
+
+    Returns (listing, considered). Drops per-recipe detail before it drops
+    recipes, because knowing about more of the cookbook matters more to the
+    quality of a pick than knowing each one in depth.
+    """
+    for detail in (True, False):
+        lines = [_candidate_line(i + 1, c, detail) for i, c in enumerate(candidates)]
+        if sum(len(l) + 1 for l in lines) <= RECOMMEND_LISTING_CHAR_BUDGET:
+            return "\n".join(lines), len(candidates)
+
+    # Still too long without detail: keep the highest-ranked head of the list.
+    # The client sends candidates best-first, so truncation drops the least
+    # relevant recipes.
+    kept, total = [], 0
+    for i, c in enumerate(candidates):
+        line = _candidate_line(i + 1, c, False)
+        if total + len(line) + 1 > RECOMMEND_LISTING_CHAR_BUDGET:
+            break
+        kept.append(line)
+        total += len(line) + 1
+    return "\n".join(kept), len(kept)
 
 
 @app.post("/recommend")
@@ -1465,7 +1528,12 @@ def recommend(request: RecommendRequest, _rl: None = Depends(rate_limit)):
     if not wanted:
         wanted = "no particular preference - surprise me with something good"
 
-    listing = "\n".join(_candidate_line(i + 1, c) for i, c in enumerate(request.recipes))
+    listing, considered = _build_listing(request.recipes)
+    if considered < len(request.recipes):
+        logger.info(
+            "Recommend listing trimmed to %d of %d recipes to fit the prompt budget",
+            considered, len(request.recipes),
+        )
 
     prompt = f"""The user is deciding what to cook tonight. In their own words:
 
@@ -1509,7 +1577,13 @@ Return ONLY this JSON object:
     if not picks:
         logger.warning("Recommendation returned no usable ids for mood: %s", wanted[:120])
 
-    return {"intro": str((data or {}).get("intro", "")).strip()[:200], "picks": picks}
+    # `considered` so the UI can say how much of the cookbook was actually read
+    # rather than assuming everything it sent was used.
+    return {
+        "intro": str((data or {}).get("intro", "")).strip()[:200],
+        "picks": picks,
+        "considered": considered,
+    }
 
 
 @app.post("/extract-collection")

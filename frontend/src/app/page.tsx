@@ -894,11 +894,7 @@ function HomeContent() {
   };
 
   const filteredRecipes = savedRecipes.filter(r => {
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      const terms = [q];
-      if (TRANSLATIONS[q]) terms.push(...TRANSLATIONS[q]);
-
+    if (searchQuery.trim()) {
       const textToSearch = [
         r.title,
         r.description,
@@ -906,7 +902,16 @@ function HomeContent() {
         ...(r.ingredients || []).map(i => i?.item || ''),
       ].join(' ').toLowerCase();
 
-      const matches = terms.some(term => textToSearch.includes(term));
+      // Every word has to hit something, and each is translated on its own.
+      // Matching the whole query as one substring made it order-sensitive:
+      // "gochujang chicken" found the recipe, "chicken gochujang" did not, and
+      // "kip curry" found nothing at all because only a bare "kip" was ever
+      // looked up in the table.
+      const words = searchQuery.toLowerCase().split(/\s+/).filter(Boolean);
+      const matches = words.every(word => {
+        const terms = [word, ...(TRANSLATIONS[word] || [])];
+        return terms.some(term => textToSearch.includes(term));
+      });
       if (!matches) return false;
     }
     if (selectedCategory !== "All") {
