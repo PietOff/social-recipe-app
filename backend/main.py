@@ -189,20 +189,48 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+# X-Forwarded-For is attacker-controlled, so the number of distinct bucket keys
+# is unbounded. Without eviction the hit maps grow forever on a long-lived
+# process - a memory leak that a single client can drive. Buckets only matter
+# for 60 seconds, so drop them once they empty and sweep periodically.
+_MAX_BUCKETS = 50_000
+_LAST_SWEEP: dict = {}
+
+
+def _bucket_hit(hits_by_identity: dict, identity: str, limit: int, now: float) -> bool:
+    """Records a hit in a 60s sliding window. Caller must hold _RATE_LOCK.
+
+    Returns True when the caller is over budget. Prunes the bucket and, at most
+    once a minute, every other stale bucket, so the map cannot grow without
+    bound."""
+    map_key = id(hits_by_identity)
+    if now - _LAST_SWEEP.get(map_key, 0.0) > 60 or len(hits_by_identity) > _MAX_BUCKETS:
+        _LAST_SWEEP[map_key] = now
+        for key in [k for k, v in hits_by_identity.items() if not v or now - v[-1] > 60]:
+            del hits_by_identity[key]
+
+    hits = hits_by_identity[identity]
+    while hits and now - hits[0] > 60:
+        hits.popleft()
+    if len(hits) >= limit:
+        if not hits:
+            del hits_by_identity[identity]
+        return True
+    hits.append(now)
+    return False
+
+
 def rate_limit(request: Request, uid: Optional[str] = Depends(optional_user)) -> None:
     """Throttles per signed-in user, falling back to client IP for anonymous callers."""
     identity = uid or client_ip(request)
     now = time.time()
     with _RATE_LOCK:
-        hits = _RATE_HITS[identity]
-        while hits and now - hits[0] > 60:
-            hits.popleft()
-        if len(hits) >= RATE_LIMIT_PER_MIN:
-            raise HTTPException(
-                status_code=429,
-                detail="Too many requests. Please wait a minute and try again.",
-            )
-        hits.append(now)
+        over = _bucket_hit(_RATE_HITS, identity, RATE_LIMIT_PER_MIN, now)
+    if over:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please wait a minute and try again.",
+        )
 
 
 def stable_recipe_id(user_id: str, video_id: Optional[str], url: str) -> str:
@@ -1815,12 +1843,9 @@ def thumb_rate_limit(request: Request) -> None:
     identity = client_ip(request)
     now = time.time()
     with _RATE_LOCK:
-        hits = _THUMB_HITS[identity]
-        while hits and now - hits[0] > 60:
-            hits.popleft()
-        if len(hits) >= THUMB_RATE_LIMIT_PER_MIN:
-            raise HTTPException(status_code=429, detail="Too many thumbnail requests.")
-        hits.append(now)
+        over = _bucket_hit(_THUMB_HITS, identity, THUMB_RATE_LIMIT_PER_MIN, now)
+    if over:
+        raise HTTPException(status_code=429, detail="Too many thumbnail requests.")
 
 
 def resolve_tiktok_thumbnail(video_id: str) -> Optional[str]:
