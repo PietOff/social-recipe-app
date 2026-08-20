@@ -30,7 +30,7 @@ env:
       - BUILD
       - RUNTIME
   - variable: NEXT_PUBLIC_API_URL
-    value: https://social-recipe-backend.onrender.com
+    value: https://social-recipe-appsocial-recipe-backend.onrender.com
     availability:
       - BUILD
       - RUNTIME

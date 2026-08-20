@@ -1618,6 +1618,15 @@ def extract_recipe(request: ExtractRequest, _rl: None = Depends(rate_limit)):
         _, _, audio_path = get_video_data(safe_url, extract_audio=True)
         if audio_path and groq_api_key:
             transcript = transcribe_audio(audio_path, groq_api_key) or ""
+        elif audio_path:
+            # transcribe_audio() is what deletes the download, so without a Groq
+            # key the mp3 stayed in /tmp forever - and the free instance has a
+            # small disk. Whisper is optional; the pipeline continues to vision.
+            logger.info("No GROQ_API_KEY; discarding downloaded audio without transcribing")
+            try:
+                os.remove(audio_path)
+            except OSError as e:
+                logger.warning(f"Could not remove {audio_path}: {e}")
     except Exception as e:
         logger.warning(f"Audio extraction failed: {e}")
 
@@ -1831,6 +1840,7 @@ def import_collection_background(
 
 THUMB_RATE_LIMIT_PER_MIN = int(os.getenv("THUMB_RATE_LIMIT_PER_MIN", "300"))
 THUMB_TTL_SECONDS = int(os.getenv("THUMB_TTL_SECONDS", "3600"))
+THUMB_CACHE_MAX = int(os.getenv("THUMB_CACHE_MAX", "5000"))
 _THUMB_CACHE: dict = {}
 _THUMB_HITS: dict = defaultdict(deque)
 VIDEO_ID_RE = re.compile(r"^\d{5,32}$")
@@ -1892,8 +1902,20 @@ def thumbnail(video_id: str, _rl: None = Depends(thumb_rate_limit)):
             raise HTTPException(status_code=404, detail="No thumbnail available.")
         with _RATE_LOCK:
             _THUMB_CACHE[video_id] = (resolved, now + THUMB_TTL_SECONDS)
-            if len(_THUMB_CACHE) > 5000:
-                for k in [k for k, v in _THUMB_CACHE.items() if v[1] <= now][:1000]:
+            if len(_THUMB_CACHE) > THUMB_CACHE_MAX:
+                # Expired entries first. If none have expired - entirely possible
+                # with a 1h TTL and a few large cookbooks in the same hour - fall
+                # back to evicting the entries closest to expiry, or the cap does
+                # not hold and this grows without bound.
+                stale = [k for k, v in _THUMB_CACHE.items() if v[1] <= now]
+                if not stale:
+                    stale = [
+                        k for k, _ in sorted(_THUMB_CACHE.items(), key=lambda kv: kv[1][1])
+                    ]
+                # Trim to a tenth below the cap so this runs in batches rather
+                # than on every insert once full.
+                drop = len(_THUMB_CACHE) - THUMB_CACHE_MAX + max(1, THUMB_CACHE_MAX // 10)
+                for k in stale[: max(1, drop)]:
                     _THUMB_CACHE.pop(k, None)
 
     # Redirect rather than proxy: the bytes never touch this instance, which

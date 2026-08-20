@@ -1,5 +1,24 @@
 'use client';
 
+/** In-flight drag-selection. Held in a ref: it changes on every pointermove
+ *  and must not re-render the grid. */
+type DragState = {
+  kind: 'paint' | 'marquee';
+  mode: 'select' | 'deselect';
+  startIdx: number;
+  /** Recipe keys in the order shown, snapshotted when the drag starts, so a
+   *  re-render mid-drag cannot shift what the run refers to. */
+  keys: string[];
+  base: Set<string>;
+  startX: number;
+  startY: number;
+  pointerId: number;
+  armed: boolean;
+  longPress: ReturnType<typeof setTimeout> | null;
+};
+
+type MarqueeRect = { left: number; top: number; width: number; height: number };
+
 import React, { useState } from 'react';
 import { Recipe } from '../types';
 import styles from './page.module.css';
@@ -689,6 +708,146 @@ function HomeContent() {
   const [selectMode, setSelectMode] = useState(false);
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
 
+  // --- Drag to select, the way Photos does it -----------------------------
+  // A tap still toggles one recipe. Beyond that:
+  //   mouse  - drag across cards to paint a run; drag from empty grid space to
+  //            sweep a marquee; shift-click to extend from the last card.
+  //   touch  - press and hold a card for a moment, then drag to paint. The
+  //            hold is what keeps ordinary vertical scrolling working while
+  //            select mode is on; without it every scroll would select.
+  // Dragging from an unselected card selects the run, from a selected card it
+  // deselects, so the same gesture undoes itself.
+  const gridRef = React.useRef<HTMLDivElement | null>(null);
+  const dragRef = React.useRef<DragState | null>(null);
+  const didDragRef = React.useRef(false);
+  const anchorRef = React.useRef<number | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+  const [marquee, setMarquee] = useState<MarqueeRect | null>(null);
+
+  const LONG_PRESS_MS = 260;
+  const DRAG_SLOP_PX = 8;
+
+  const applyRun = (drag: DragState, toIdx: number) => {
+    const lo = Math.min(drag.startIdx, toIdx);
+    const hi = Math.max(drag.startIdx, toIdx);
+    const next = new Set(drag.base);
+    for (let i = lo; i <= hi; i++) {
+      const k = drag.keys[i];
+      if (!k) continue;
+      if (drag.mode === 'select') next.add(k); else next.delete(k);
+    }
+    setBulkSelected(next);
+  };
+
+  const cardIdxAtPoint = (x: number, y: number): number | null => {
+    const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+    const card = hit?.closest('[data-recipe-idx]') as HTMLElement | null;
+    if (!card) return null;
+    const n = Number(card.dataset.recipeIdx);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const applyMarquee = (drag: DragState, x: number, y: number) => {
+    const left = Math.min(drag.startX, x);
+    const top = Math.min(drag.startY, y);
+    const width = Math.abs(x - drag.startX);
+    const height = Math.abs(y - drag.startY);
+    setMarquee({ left, top, width, height });
+    const next = new Set(drag.base);
+    gridRef.current?.querySelectorAll<HTMLElement>('[data-recipe-idx]').forEach(card => {
+      const r = card.getBoundingClientRect();
+      const overlaps = r.right > left && r.left < left + width && r.bottom > top && r.top < top + height;
+      if (!overlaps) return;
+      const k = drag.keys[Number(card.dataset.recipeIdx)];
+      if (k) next.add(k);
+    });
+    setBulkSelected(next);
+  };
+
+  /** Wires up a drag. `kind` is decided by where the pointer went down. */
+  const beginDrag = (
+    e: React.PointerEvent,
+    kind: DragState['kind'],
+    startIdx: number,
+    mode: DragState['mode'],
+    keys: string[],
+  ) => {
+    const drag: DragState = {
+      kind,
+      mode,
+      startIdx,
+      keys,
+      base: new Set(bulkSelected),
+      startX: e.clientX,
+      startY: e.clientY,
+      pointerId: e.pointerId,
+      // A mouse means business immediately; a finger has to hold first.
+      armed: e.pointerType !== 'touch',
+      longPress: null,
+    };
+    dragRef.current = drag;
+    didDragRef.current = false;
+
+    const finish = () => {
+      if (drag.longPress) clearTimeout(drag.longPress);
+      dragRef.current = null;
+      setDragActive(false);
+      setMarquee(null);
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', finish);
+      document.removeEventListener('pointercancel', finish);
+      document.removeEventListener('touchmove', blockScroll);
+    };
+
+    // Once the hold has armed a touch drag, the finger is painting, not
+    // scrolling. touch-action cannot express that - the browser fixes it at
+    // touchstart, before we know which gesture this is - so the scroll is
+    // cancelled here instead. Without it the page scrolls out from under the
+    // drag and only the first card ends up selected.
+    const blockScroll = (ev: TouchEvent) => {
+      if (drag.armed && ev.cancelable) ev.preventDefault();
+    };
+
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== drag.pointerId) return;
+      const movedFar =
+        Math.abs(ev.clientX - drag.startX) > DRAG_SLOP_PX ||
+        Math.abs(ev.clientY - drag.startY) > DRAG_SLOP_PX;
+      if (!drag.armed) {
+        // Moved before the hold completed: this is a scroll, not a selection.
+        if (movedFar) finish();
+        return;
+      }
+      if (!movedFar && drag.kind === 'paint') return;
+      didDragRef.current = true;
+      setDragActive(true);
+      if (drag.kind === 'marquee') {
+        applyMarquee(drag, ev.clientX, ev.clientY);
+        return;
+      }
+      const idx = cardIdxAtPoint(ev.clientX, ev.clientY);
+      if (idx !== null) applyRun(drag, idx);
+    };
+
+    if (!drag.armed) {
+      drag.longPress = setTimeout(() => {
+        drag.armed = true;
+        setDragActive(true);
+        // The hold itself selects the card under the finger, so the gesture
+        // reads as "grab this one and keep going".
+        applyRun(drag, drag.startIdx);
+        didDragRef.current = true;
+      }, LONG_PRESS_MS);
+    }
+
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', finish);
+    document.addEventListener('pointercancel', finish);
+    if (e.pointerType === 'touch') {
+      document.addEventListener('touchmove', blockScroll, { passive: false });
+    }
+  };
+
   // --- FILTERING & BILINGUAL SEARCH ---
   const [selectedCategory, setSelectedCategory] = useState("All");
 
@@ -1319,7 +1478,7 @@ function HomeContent() {
             <div className={styles.cookbookSection}>
               <div className={styles.cookbookHeader}>
                 <h2>My Cookbook ({savedRecipes.length})</h2>
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <div className={styles.cookbookTools}>
                   <div className={styles.searchWrap}>
                     <input
                       ref={searchInputRef}
@@ -1342,9 +1501,9 @@ function HomeContent() {
                     )}
                   </div>
                   <button
-                    onClick={() => { setSelectMode(p => !p); setBulkSelected(new Set()); }}
-                    className={styles.button}
-                    style={{ whiteSpace: 'nowrap', padding: '0.5rem 0.9rem', fontSize: '0.85rem', background: selectMode ? 'var(--primary-gradient)' : 'rgba(255,255,255,0.1)' }}
+                    onClick={() => { setSelectMode(p => !p); setBulkSelected(new Set()); anchorRef.current = null; }}
+                    className={`${styles.button} ${styles.toolButton}`}
+                    style={selectMode ? { background: 'var(--primary-gradient)' } : undefined}
                   >
                     {selectMode ? 'Cancel' : 'Select'}
                   </button>
@@ -1355,8 +1514,7 @@ function HomeContent() {
                         const allSelected = filteredRecipes.every(r => bulkSelected.has(recipeKey(r)));
                         setBulkSelected(allSelected ? new Set() : allIds);
                       }}
-                      className={styles.button}
-                      style={{ whiteSpace: 'nowrap', padding: '0.5rem 0.9rem', fontSize: '0.85rem', background: 'rgba(255,255,255,0.1)' }}
+                      className={`${styles.button} ${styles.toolButton}`}
                     >
                       {filteredRecipes.every(r => bulkSelected.has(recipeKey(r))) ? 'Deselect All' : 'Select All'}
                     </button>
@@ -1367,36 +1525,43 @@ function HomeContent() {
               {/* Bulk action bar. Sits above the grid and sticks to the top of
                   the viewport: below the grid it was unreachable without
                   scrolling past every recipe in the cookbook. */}
-              {selectMode && bulkSelected.size > 0 && (
+              {/* Rendered for the whole of select mode, not just once something is
+                  picked. It used to appear on the first selection, which pushed
+                  the grid down mid-drag - the cards moved out from under the
+                  finger and the rest of the run selected nothing. */}
+              {selectMode && (
                 <div className={styles.bulkBar}>
-                  <span style={{ opacity: 0.8, whiteSpace: 'nowrap' }}>{bulkSelected.size} selected</span>
-                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  <span className={styles.bulkCount}>
+                    {bulkSelected.size > 0
+                      ? `${bulkSelected.size} selected`
+                      : 'Tap recipes, or hold one and drag'}
+                  </span>
+                  <div className={styles.bulkActions}>
                     <button
                       onClick={() => handleExportPdf(savedRecipes.filter(r => bulkSelected.has(recipeKey(r))), false)}
-                      className={styles.button}
-                      style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: 'rgba(255,255,255,0.12)' }}
+                      className={`${styles.button} ${styles.bulkButton}`}
+                      disabled={bulkSelected.size === 0}
                       title="Export the selected recipes as one PDF, one recipe per page"
                     >
-                      🖨️ Export PDF
+                      🖨️ Export<span className={styles.bulkLabel}> PDF</span>
                     </button>
                     <button
                       onClick={() => handleExportPdf(savedRecipes.filter(r => bulkSelected.has(recipeKey(r))), true)}
-                      className={styles.button}
-                      style={{ padding: '0.5rem 1rem', fontSize: '0.9rem', background: 'rgba(255,255,255,0.12)' }}
+                      className={`${styles.button} ${styles.bulkButton}`}
+                      disabled={bulkSelected.size === 0}
                       title="Export as a cookbook PDF: cover page, table of contents and recipes grouped by category"
                     >
-                      📖 Cookbook PDF
+                      📖 Cookbook<span className={styles.bulkLabel}> PDF</span>
                     </button>
                     <button
                       onClick={() => {
                         const recipes = savedRecipes.filter(r => bulkSelected.has(recipeKey(r)));
                         handleShare(recipes).then(() => { setSelectMode(false); setBulkSelected(new Set()); });
                       }}
-                      className={styles.button}
-                      disabled={shareLoading}
-                      style={{ padding: '0.5rem 1.2rem', fontSize: '0.9rem' }}
+                      className={`${styles.button} ${styles.bulkButton} ${styles.bulkPrimary}`}
+                      disabled={shareLoading || bulkSelected.size === 0}
                     >
-                      🔗 {shareLoading ? 'Creating link...' : 'Share selected'}
+                      🔗 {shareLoading ? 'Creating link...' : 'Share'}
                     </button>
                   </div>
                 </div>
@@ -1431,7 +1596,17 @@ function HomeContent() {
               )}
 
               {/* Grid View */}
-              <div className={styles.cookbookGrid}>
+              <div
+                className={`${styles.cookbookGrid} ${selectMode ? styles.selectModeGrid : ''}`}
+                ref={gridRef}
+                style={dragActive ? { touchAction: 'none', userSelect: 'none' } : undefined}
+                onPointerDown={(e) => {
+                  // Empty space between cards, mouse only: sweep a marquee.
+                  if (!selectMode || e.pointerType === 'touch' || e.button !== 0) return;
+                  if ((e.target as HTMLElement).closest('[data-recipe-idx]')) return;
+                  beginDrag(e, 'marquee', -1, 'select', filteredRecipes.map(recipeKey));
+                }}
+              >
                 {cookbookLoading && savedRecipes.length === 0 ? (
                   <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>
                     Loading your recipes...
@@ -1443,10 +1618,33 @@ function HomeContent() {
                   return (
                     <div
                       key={key}
-                      className={styles.cookbookItem}
+                      className={`${styles.cookbookItem} ${selectMode ? styles.selectable : ''}`}
+                      data-recipe-idx={idx}
                       style={{ outline: isSelected ? '2px solid #FF6B35' : undefined, position: 'relative' }}
-                      onClick={() => {
+                      onPointerDown={(e) => {
+                        if (!selectMode) return;
+                        if (e.pointerType === 'mouse' && e.button !== 0) return;
+                        beginDrag(e, 'paint', idx, isSelected ? 'deselect' : 'select', filteredRecipes.map(recipeKey));
+                      }}
+                      onClick={(e) => {
+                        // A drag already did the selecting; the click that ends
+                        // it must not toggle the card back.
+                        if (didDragRef.current) { didDragRef.current = false; return; }
                         if (selectMode) {
+                          if (e.shiftKey && anchorRef.current !== null) {
+                            const lo = Math.min(anchorRef.current, idx);
+                            const hi = Math.max(anchorRef.current, idx);
+                            setBulkSelected(prev => {
+                              const n = new Set(prev);
+                              for (let i = lo; i <= hi; i++) {
+                                const k = recipeKey(filteredRecipes[i]);
+                                if (k) n.add(k);
+                              }
+                              return n;
+                            });
+                            return;
+                          }
+                          anchorRef.current = idx;
                           setBulkSelected(prev => { const n = new Set(prev); isSelected ? n.delete(key) : n.add(key); return n; });
                         } else {
                           cookbookScrollY.current = window.scrollY; setRecipe(r); setView('details'); window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1499,6 +1697,13 @@ function HomeContent() {
                   </p>
                 )}
               </div>
+
+              {marquee && (
+                <div
+                  className={styles.marquee}
+                  style={{ left: marquee.left, top: marquee.top, width: marquee.width, height: marquee.height }}
+                />
+              )}
 
             </div>
           )}
