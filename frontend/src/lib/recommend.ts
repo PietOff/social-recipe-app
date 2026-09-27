@@ -1,8 +1,13 @@
 import { Recipe } from '../types';
 import { apiPost } from './api';
 import { recipeKey } from './recipes';
+import { containsTerm } from './text';
+import { expandTerm, queryWords, searchableText } from './search';
+import { Lang } from './i18n';
 
-/** Tap-able starting points. Free text is combined with whatever is selected. */
+/** Tap-able starting points. Free text is combined with whatever is selected.
+ *  Sent to the backend in English whatever the UI language; the Dutch names
+ *  are display-only (see LABELS_NL in lib/i18n.tsx). */
 export const MOOD_CHIPS = [
   'Quick (under 20 min)',
   'Comfort food',
@@ -46,28 +51,14 @@ function ingredientNames(recipe: Recipe): string[] {
     .slice(0, 8);
 }
 
-/** Everything about a recipe that could plausibly match a mood, lowercased. */
-function searchableText(recipe: Recipe): string {
-  return [
-    recipe.title,
-    recipe.description,
-    ...(recipe.tags || []),
-    recipe.category || '',
-    ...ingredientNames(recipe),
-  ]
-    .join(' ')
-    .toLowerCase();
-}
-
 /**
  * Cheap keyword overlap, used only to choose WHICH recipes the model gets to
  * see when the cookbook is bigger than one prompt. The model still does the
- * actual choosing.
+ * actual choosing. Each term is a synonym group, so a Dutch mood ("iets met
+ * kip") still finds the English recipes.
  */
-function relevanceScore(recipe: Recipe, terms: string[]): number {
-  if (terms.length === 0) return 0;
-  const text = searchableText(recipe);
-  return terms.reduce((score, term) => (text.includes(term) ? score + 1 : score), 0);
+function relevanceScore(text: string, terms: string[][]): number {
+  return terms.reduce((score, group) => (group.some(t => containsTerm(text, t)) ? score + 1 : score), 0);
 }
 
 /** Fisher-Yates on a copy. */
@@ -81,10 +72,11 @@ function shuffled<T>(items: T[]): T[] {
 }
 
 export function prefilter(recipes: Recipe[], wanted: string): Recipe[] {
-  const terms = wanted
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(t => t.length > 2);
+  // Letters outside a-z count as word characters: the old /[^a-z0-9]+/ split
+  // cut "crème" and "één" in half.
+  const terms = queryWords(wanted)
+    .filter(t => t.length > 2)
+    .map(expandTerm);
 
   // "Surprise me" has nothing to rank by, so every recipe scores zero and the
   // order stays as saved - meaning the same handful off the top of the cookbook
@@ -98,7 +90,7 @@ export function prefilter(recipes: Recipe[], wanted: string): Recipe[] {
 
   // Stable: score descending, original order preserved within a score.
   return recipes
-    .map((recipe, index) => ({ recipe, index, score: relevanceScore(recipe, terms) }))
+    .map((recipe, index) => ({ recipe, index, score: relevanceScore(searchableText(recipe), terms) }))
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .slice(0, MAX_CANDIDATES)
     .map(entry => entry.recipe);
@@ -110,6 +102,7 @@ export async function recommendFromCookbook(
   mood: string,
   limit = 5,
   signal?: AbortSignal,
+  language: Lang = 'en',
 ): Promise<SuggestionSet> {
   const usable = recipes.filter(r => recipeKey(r));
   const wanted = [moods.join(', '), mood].filter(Boolean).join(' ');
@@ -123,6 +116,8 @@ export async function recommendFromCookbook(
       mood,
       moods,
       limit,
+      // The language the intro and reasons are written in.
+      language,
       recipes: candidates.map(r => ({
         id: recipeKey(r),
         title: r.title || '',

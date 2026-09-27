@@ -5,13 +5,16 @@ import { Recipe } from '../../../types';
 import { db, auth } from '../../../firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import { saveRecipeToCloud, thumbnailSrc } from '../../../lib/recipes';
+import { labelText, useLang } from '../../../lib/i18n';
 
 export default function SharePage({ params }: { params: Promise<{ token: string }> }) {
   // Next.js 16 makes route params a Promise; reading `params.token` directly is
   // no longer valid.
   const { token } = React.use(params);
+  const { t, lang, setLang } = useLang();
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [loading, setLoading] = useState(true);
+  // 'not-found' is kept as a code so it is shown in the current language.
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState<string | null>(null);
@@ -20,7 +23,7 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
     getDoc(doc(db, 'shared_links', token))
       .then(docSnap => {
         if (!docSnap.exists()) {
-          throw new Error('Share link not found or expired.');
+          throw new Error('not-found');
         }
         const data = docSnap.data();
         setRecipes(Array.isArray(data.recipes) ? data.recipes : [data.recipes]);
@@ -43,7 +46,7 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
       setSaved(prev => new Set([...prev, recipe.title]));
     } catch (e) {
       console.error(e);
-      alert('Failed to save. Please try again.');
+      alert(t.saveFailed);
     } finally {
       setSaving(null);
     }
@@ -58,7 +61,7 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
   if (loading) return (
     <main style={styles.main}>
       <div style={styles.card}>
-        <p style={{ opacity: 0.6, textAlign: 'center' }}>Loading shared recipes...</p>
+        <p style={{ opacity: 0.6, textAlign: 'center' }}>{t.loadingShared}</p>
       </div>
     </main>
   );
@@ -66,9 +69,9 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
   if (error) return (
     <main style={styles.main}>
       <div style={styles.card}>
-        <h2 style={{ marginBottom: '0.5rem' }}>Link not found</h2>
-        <p style={{ opacity: 0.6 }}>{error}</p>
-        <a href="/" style={styles.link}>Go to ChefSocial →</a>
+        <h2 style={{ marginBottom: '0.5rem' }}>{t.linkNotFound}</h2>
+        <p style={{ opacity: 0.6 }}>{error === 'not-found' ? t.shareNotFound : error}</p>
+        <a href="/" style={styles.link}>{t.goToApp}</a>
       </div>
     </main>
   );
@@ -76,18 +79,21 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
   return (
     <main style={styles.main}>
       <header style={styles.header}>
+        <button type="button" onClick={() => setLang(lang === 'nl' ? 'en' : 'nl')} style={styles.langToggle} aria-label={t.switchLanguage} title={t.switchLanguage}>
+          {lang === 'nl' ? 'EN' : 'NL'}
+        </button>
         <a href="/" style={{ textDecoration: 'none' }}>
           <h1 style={styles.logo}>Chef<span style={styles.highlight}>Social</span></h1>
         </a>
         <p style={{ opacity: 0.6, margin: '0.25rem 0 0' }}>
-          {recipes.length === 1 ? 'A recipe was shared with you' : `${recipes.length} recipes were shared with you`}
+          {t.sharedWithYou(recipes.length)}
         </p>
       </header>
 
       {recipes.length > 1 && (
         <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
           <button onClick={saveAll} style={styles.saveAllBtn}>
-            Save all to my Cookbook
+            {t.saveAllToCookbook}
           </button>
         </div>
       )}
@@ -106,7 +112,7 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
                   disabled={saved.has(recipe.title) || saving === recipe.title}
                   style={{ ...styles.saveBtn, ...(saved.has(recipe.title) ? styles.savedBtn : {}) }}
                 >
-                  {saved.has(recipe.title) ? 'Saved!' : saving === recipe.title ? '...' : 'Save'}
+                  {saved.has(recipe.title) ? t.saved : saving === recipe.title ? '...' : t.save}
                 </button>
               </div>
 
@@ -120,13 +126,13 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
 
               {(recipe.tags || []).length > 0 && (
                 <div style={styles.tags}>
-                  {(recipe.tags || []).map(t => <span key={t} style={styles.tag}>{t}</span>)}
+                  {(recipe.tags || []).map(tag => <span key={tag} style={styles.tag}>{labelText(tag, lang)}</span>)}
                 </div>
               )}
 
               <div style={styles.split}>
                 <div>
-                  <h3 style={styles.sectionTitle}>Ingredients</h3>
+                  <h3 style={styles.sectionTitle}>{t.ingredients}</h3>
                   <ul style={styles.list}>
                     {recipe.ingredients.map((ing, j) => (
                       <li key={j}><b>{ing.amount} {ing.unit}</b> {ing.item}</li>
@@ -134,7 +140,7 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
                   </ul>
                 </div>
                 <div>
-                  <h3 style={styles.sectionTitle}>Instructions</h3>
+                  <h3 style={styles.sectionTitle}>{t.instructions}</h3>
                   <ol style={styles.list}>
                     {recipe.instructions.map((step, j) => <li key={j}>{step}</li>)}
                   </ol>
@@ -146,7 +152,7 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
       </div>
 
       <footer style={styles.footer}>
-        <a href="/" style={styles.link}>Make your own cookbook at ChefSocial →</a>
+        <a href="/" style={styles.link}>{t.makeYourOwn}</a>
       </footer>
     </main>
   );
@@ -154,7 +160,8 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
 
 const styles: Record<string, React.CSSProperties> = {
   main: { minHeight: '100vh', background: 'linear-gradient(135deg, #0a0a1a 0%, #1a1a3e 100%)', color: '#fff', padding: '1.5rem 1rem 3rem', fontFamily: 'system-ui, sans-serif' },
-  header: { textAlign: 'center', marginBottom: '2rem' },
+  header: { textAlign: 'center', marginBottom: '2rem', position: 'relative' },
+  langToggle: { position: 'absolute', top: 0, right: 0, minWidth: 40, minHeight: 36, padding: '0 0.6rem', borderRadius: '999px', border: '1px solid rgba(255,255,255,0.18)', background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.85)', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' },
   logo: { fontSize: '2rem', fontWeight: 800, margin: 0, color: '#fff' },
   highlight: { background: 'linear-gradient(90deg, #FF6B35, #FF8E53)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' },
   card: { maxWidth: 480, margin: '4rem auto', background: 'rgba(255,255,255,0.06)', borderRadius: '16px', padding: '2rem', textAlign: 'center' },
