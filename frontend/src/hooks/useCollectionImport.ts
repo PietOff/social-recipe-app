@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Recipe } from '../types';
 import { apiPost, ApiError } from '../lib/api';
+import { getStrings } from '../lib/i18n';
 import {
   saveRecipeToCloud,
   recipeExistsInCloud,
@@ -174,7 +175,7 @@ export function useCollectionImport() {
         const id = queue.shift()!;
         const video = byId.get(id);
         if (!video) continue;
-        const label = video.title || 'Untitled';
+        const label = video.title || getStrings().untitled;
         setProgress(p => ({ ...p, currentTitle: label }));
 
         let attempt = 0;
@@ -182,7 +183,7 @@ export function useCollectionImport() {
           attempt += 1;
           try {
             if (failedBefore.has(id)) {
-              finish(id, 'skipped', label, 'Skipped - no recipe was found in this video on a previous run');
+              finish(id, 'skipped', label, getStrings().reasonSkippedBefore);
               break;
             }
             if (await recipeExistsInCloud(job.uid, { video_id: video.video_id, source_url: video.url })) {
@@ -196,7 +197,7 @@ export function useCollectionImport() {
 
             if (!recipe.ingredients?.length) {
               recordFailedImportId(id);
-              finish(id, 'failed', label, 'No ingredients could be extracted');
+              finish(id, 'failed', label, getStrings().reasonNoIngredients);
               break;
             }
 
@@ -226,13 +227,13 @@ export function useCollectionImport() {
             }
             const canRetry = !(err instanceof ApiError) || err.retryable;
             if (!canRetry) {
-              finish(id, 'failed', label, err.message || 'Extraction failed');
+              finish(id, 'failed', label, err.message || getStrings().reasonExtractionFailed);
               break;
             }
             if (attempt >= MAX_ATTEMPTS) {
               // Out of attempts on a *temporary* error: keep it queued rather
               // than discarding it, and stop so the user can retry later.
-              halt('Repeated temporary errors - the rest stayed in the queue. ' + (err.message || ''));
+              halt(getStrings().reasonRepeatedErrors + ' ' + (err.message || ''));
               return;
             }
             try {

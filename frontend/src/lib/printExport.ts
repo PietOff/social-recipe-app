@@ -1,4 +1,5 @@
 import { Recipe, Ingredient } from '../types';
+import { getLang, labelText, Lang, STRINGS, Strings } from './i18n';
 
 /**
  * PDF / print export.
@@ -15,6 +16,8 @@ export interface ExportOptions {
     cookbook?: boolean;
     /** Title used on the cover page / document title. */
     title?: string;
+    /** Language of the headings; defaults to the current UI language. */
+    lang?: Lang;
 }
 
 /** Canonical meal ordering used to arrange cookbook chapters logically. */
@@ -71,6 +74,10 @@ export function groupByCategory(recipes: Recipe[]): [string, Recipe[]][] {
         ]);
 }
 
+/** Headings and fixed text for one export, set by buildPrintDocument. */
+let t: Strings = STRINGS.en;
+let lang: Lang = 'en';
+
 function ingredientLine(ing: Ingredient): string {
     let amount = ing.amount || '';
     let unit = ing.unit || '';
@@ -93,16 +100,16 @@ function ingredientsHtml(recipe: Recipe): string {
     const showHeaders = keys.length > 1 || (keys.length === 1 && keys[0] !== 'Main');
 
     return keys.map(group => `
-        ${showHeaders ? `<h4>${escapeHtml(group)}</h4>` : ''}
+        ${showHeaders ? `<h4>${escapeHtml(labelText(group, lang))}</h4>` : ''}
         <ul>${grouped[group].map(ingredientLine).join('')}</ul>
     `).join('');
 }
 
 function metaHtml(recipe: Recipe): string {
     const parts: string[] = [];
-    if (recipe.prep_time) parts.push(`<span><b>Prep</b> ${escapeHtml(recipe.prep_time)}</span>`);
-    if (recipe.cook_time) parts.push(`<span><b>Cook</b> ${escapeHtml(recipe.cook_time)}</span>`);
-    if (recipe.servings) parts.push(`<span><b>Serves</b> ${escapeHtml(recipe.servings)}</span>`);
+    if (recipe.prep_time) parts.push(`<span><b>${t.pdfPrep}</b> ${escapeHtml(recipe.prep_time)}</span>`);
+    if (recipe.cook_time) parts.push(`<span><b>${t.pdfCook}</b> ${escapeHtml(recipe.cook_time)}</span>`);
+    if (recipe.servings) parts.push(`<span><b>${t.pdfServes}</b> ${escapeHtml(recipe.servings)}</span>`);
     return parts.length ? `<div class="meta">${parts.join('')}</div>` : '';
 }
 
@@ -111,23 +118,27 @@ function recipeArticle(recipe: Recipe, category?: string): string {
     const instructions = recipe.instructions || [];
     return `
     <article class="recipe">
-        ${category ? `<div class="kicker">${escapeHtml(category)}</div>` : ''}
-        <h2>${escapeHtml(recipe.title || 'Untitled recipe')}</h2>
+        ${category ? `<div class="kicker">${escapeHtml(chapterName(category))}</div>` : ''}
+        <h2>${escapeHtml(recipe.title || t.pdfUntitled)}</h2>
         ${recipe.description ? `<p class="desc">${escapeHtml(recipe.description)}</p>` : ''}
         ${metaHtml(recipe)}
-        ${tags.length ? `<div class="tags">${tags.map(t => `<span>${escapeHtml(t)}</span>`).join('')}</div>` : ''}
+        ${tags.length ? `<div class="tags">${tags.map(tag => `<span>${escapeHtml(labelText(tag, lang))}</span>`).join('')}</div>` : ''}
         <div class="split">
             <section>
-                <h3>Ingredients</h3>
+                <h3>${t.ingredients}</h3>
                 ${ingredientsHtml(recipe)}
             </section>
             <section>
-                <h3>Instructions</h3>
+                <h3>${t.instructions}</h3>
                 <ol>${instructions.map(step => `<li>${escapeHtml(step)}</li>`).join('')}</ol>
             </section>
         </div>
-        ${recipe.source_url ? `<div class="source">Source: ${escapeHtml(recipe.source_url)}</div>` : ''}
+        ${recipe.source_url ? `<div class="source">${t.pdfSource}: ${escapeHtml(recipe.source_url)}</div>` : ''}
     </article>`;
+}
+
+function chapterName(category: string): string {
+    return category === FALLBACK_CATEGORY ? t.pdfMoreRecipes : labelText(category, lang);
 }
 
 const PRINT_CSS = `
@@ -177,33 +188,35 @@ const PRINT_CSS = `
 
 /** Builds the full standalone HTML document for a set of recipes. */
 export function buildPrintDocument(recipes: Recipe[], opts: ExportOptions = {}): string {
-    const title = opts.title || (recipes.length === 1 ? recipes[0].title : 'My Cookbook');
+    lang = opts.lang ?? getLang();
+    t = STRINGS[lang];
+    const title = opts.title || (recipes.length === 1 ? recipes[0].title : t.pdfCookbookTitle);
     const parts: string[] = [];
 
     if (opts.cookbook && recipes.length > 1) {
         const chapters = groupByCategory(recipes);
-        const date = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+        const date = new Date().toLocaleDateString(lang === 'nl' ? 'nl-NL' : undefined, { year: 'numeric', month: 'long', day: 'numeric' });
 
         parts.push(`
         <div class="cover">
             <h1>${escapeHtml(title)}</h1>
-            <div class="sub">${recipes.length} recipes &middot; ${escapeHtml(date)}</div>
+            <div class="sub">${escapeHtml(t.recipeCount(recipes.length))} &middot; ${escapeHtml(date)}</div>
         </div>`);
 
         parts.push(`
         <div class="toc page-break">
-            <h2>Contents</h2>
+            <h2>${t.pdfContents}</h2>
             ${chapters.map(([cat, list]) => `
-                <h3>${escapeHtml(cat)}</h3>
-                <ul>${list.map(r => `<li>${escapeHtml(r.title || 'Untitled recipe')}</li>`).join('')}</ul>
+                <h3>${escapeHtml(chapterName(cat))}</h3>
+                <ul>${list.map(r => `<li>${escapeHtml(r.title || t.pdfUntitled)}</li>`).join('')}</ul>
             `).join('')}
         </div>`);
 
         for (const [cat, list] of chapters) {
             parts.push(`
             <div class="chapter page-break">
-                <h2>${escapeHtml(cat)}</h2>
-                <div class="count">${list.length} recipe${list.length !== 1 ? 's' : ''}</div>
+                <h2>${escapeHtml(chapterName(cat))}</h2>
+                <div class="count">${escapeHtml(t.recipeCount(list.length))}</div>
             </div>`);
             for (const recipe of list) {
                 parts.push(`<div class="page-break">${recipeArticle(recipe, cat)}</div>`);
@@ -218,7 +231,7 @@ export function buildPrintDocument(recipes: Recipe[], opts: ExportOptions = {}):
     }
 
     return `<!DOCTYPE html>
-<html>
+<html lang="${lang}">
 <head>
 <meta charset="utf-8">
 <title>${escapeHtml(title)}</title>

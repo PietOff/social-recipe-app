@@ -53,6 +53,8 @@ import { addPendingSync, flushPendingSync, loadPendingSync, mergeSynced } from '
 import { MOOD_CHIPS, recommendFromCookbook, Suggestion } from '../lib/recommend';
 import { hasLabel, labelFacets, labelValues } from '../lib/labels';
 import { exportRecipesToPdf } from '../lib/printExport';
+import { getStrings, labelText, useLang } from '../lib/i18n';
+import { matchesQuery, searchableText } from '../lib/search';
 
 interface User {
   id: string;
@@ -63,6 +65,7 @@ interface User {
 }
 
 function HomeContent() {
+  const { t, lang, setLang } = useLang();
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -210,9 +213,8 @@ function HomeContent() {
       if (recipes.length === 0 && known.length > 0) {
         setCookbookError(
           querySnapshot.metadata.fromCache
-            ? 'Could not reach the database just now - showing your saved copy. Pull down to retry.'
-            : `The database returned no recipes, but ${known.length} are saved on this device. ` +
-              'Keeping them rather than clearing your cookbook - reload to try again.',
+            ? getStrings().errOfflineCache
+            : getStrings().errEmptyButLocal(known.length),
         );
         return; // Leave savedRecipes and the cache exactly as they are.
       }
@@ -234,9 +236,9 @@ function HomeContent() {
     } catch (e: any) {
       console.error('Failed to fetch cloud recipes', e);
       if (e.code === 'permission-denied') {
-        setCookbookError('Database permission denied. Please verify your Firestore Security Rules allow read access.');
+        setCookbookError(getStrings().errPermission);
       } else {
-        setCookbookError('Could not reach the database. Showing cached data.');
+        setCookbookError(getStrings().errUnreachable);
       }
     } finally {
       setCookbookLoading(false);
@@ -264,10 +266,7 @@ function HomeContent() {
         });
       }
       if (remaining.length > 0) {
-        setCookbookError(
-          `${remaining.length} recipe${remaining.length === 1 ? '' : 's'} could not be saved to the cloud` +
-          `${lastError ? ` (${lastError})` : ''}. They are on this device only.`,
-        );
+        setCookbookError(getStrings().errSyncRemaining(remaining.length, lastError || ''));
       } else if (synced.length > 0) {
         setCookbookError(null);
       }
@@ -306,7 +305,7 @@ function HomeContent() {
           localStorage.removeItem('chefSocial_cookbook'); // Clear local after migration
         } catch (e) {
           console.error('Migration failed:', e);
-          setCookbookError('Some recipes from this device could not be uploaded. They are still saved locally.');
+          setCookbookError(t.errMigration);
         }
       }
 
@@ -314,11 +313,11 @@ function HomeContent() {
       await fetchCloudRecipes(firebaseUser.uid);
     } catch (e: any) {
       if (e.code === 'auth/unauthorized-domain') {
-        setError(`Login failed: This domain (${window.location.hostname}) is not authorized in your Firebase Console. Please add it under Authentication > Settings > Authorized domains.`);
+        setError(t.errUnauthorizedDomain(window.location.hostname));
       } else if (e.code === 'auth/operation-not-allowed') {
-        setError('Login failed: Google Sign-in is not enabled. Please enable it in the Firebase Console under Authentication > Sign-in method.');
+        setError(t.errSignInDisabled);
       } else {
-        setError(`Login failed: ${e.message}`);
+        setError(t.errLogin(e.message));
       }
       console.error('Google login error', e);
     } finally {
@@ -401,10 +400,7 @@ function HomeContent() {
           console.error('Cloud save failed, kept locally', e);
           localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(optimistic));
           setPendingSync(addPendingSync(recipeToSave));
-          setCookbookError(
-            `"${recipeToSave.title || 'Recipe'}" saved on this device only - it could not reach the cloud, ` +
-            `so it will not show up on your other devices yet.`,
-          );
+          setCookbookError(t.errLocalOnly(recipeToSave.title || t.recipeFallback));
         }
       } else {
         localStorage.setItem('chefSocial_cookbook', JSON.stringify(optimistic));
@@ -419,14 +415,14 @@ function HomeContent() {
     setSuggestError(null);
     setHasSuggested(true);
     try {
-      const result = await recommendFromCookbook(savedRecipes, [...selectedMoods], moodText.trim());
+      const result = await recommendFromCookbook(savedRecipes, [...selectedMoods], moodText.trim(), 5, undefined, lang);
       setSuggestions(result.results);
       setSuggestIntro(result.intro);
       setSuggestConsidered({ considered: result.considered, total: result.total });
     } catch (err: any) {
       setSuggestions([]);
       setSuggestIntro('');
-      setSuggestError(err?.message || 'Could not get a suggestion right now.');
+      setSuggestError(err?.message || t.errSuggest);
     } finally {
       setSuggestLoading(false);
     }
@@ -487,7 +483,7 @@ function HomeContent() {
     if (!url) return;
 
     if (!isSupportedRecipeUrl(url)) {
-      setError('Please paste a TikTok, Instagram or YouTube link.');
+      setError(t.errUnsupportedUrl);
       return;
     }
 
@@ -509,7 +505,7 @@ function HomeContent() {
         if (collectionData && collectionData.is_collection && (collectionData.count ?? 0) > 0) {
           const videos: CollectionVideo[] = collectionData.videos ?? [];
           setCollectionVideos(videos);
-          setCollectionTitle(collectionData.collection_title || 'Collection');
+          setCollectionTitle(collectionData.collection_title || t.collection);
           setLoading(false);
 
           setClassifying(true);
@@ -566,7 +562,7 @@ function HomeContent() {
 
   const handleDelete = async () => {
     if (!recipe) return;
-    if (confirm("Are you sure you want to delete this recipe?")) {
+    if (confirm(t.confirmDelete)) {
       const updated = savedRecipes.filter(r => !isSameRecipe(r, recipe));
       setSavedRecipes(updated);
 
@@ -589,12 +585,12 @@ function HomeContent() {
   // Renders a clean printable document in a hidden iframe instead of
   // window.print() on the live page, which produced broken/blank output.
   const handlePrint = () => {
-    if (recipe) exportRecipesToPdf([recipe]);
+    if (recipe) exportRecipesToPdf([recipe], { lang });
   };
 
   const handleExportPdf = (recipesToExport: Recipe[], cookbook: boolean) => {
     if (recipesToExport.length === 0) return;
-    exportRecipesToPdf(recipesToExport, { cookbook, title: 'My Cookbook' });
+    exportRecipesToPdf(recipesToExport, { cookbook, title: t.pdfCookbookTitle, lang });
   };
 
   const [shareLink, setShareLink] = useState<string | null>(null);
@@ -640,7 +636,7 @@ function HomeContent() {
   };
 
   const handleShare = async (recipesToShare: Recipe[]) => {
-    if (!user) { setError('Sign in to share recipes.'); return; }
+    if (!user) { setError(t.errSignInToShare); return; }
     setShareLoading(true);
     try {
       // Math.random() is not cryptographically secure - its PRNG state is
@@ -664,7 +660,7 @@ function HomeContent() {
       setShareLink(link);
       setTimeout(() => copyShareLink(link), 50);
     } catch (e: any) {
-      setError(`Failed to create share link: ${e.message}`);
+      setError(t.errShare(e.message));
     } finally {
       setShareLoading(false);
     }
@@ -863,57 +859,16 @@ function HomeContent() {
     }
   }, [cookbookFacets, selectedCategory]);
 
-  const TRANSLATIONS: Record<string, string[]> = {
-    'chicken': ['kip', 'gevogelte', 'poultry'],
-    'beef': ['rund', 'biefstuk', 'steak', 'meat'],
-    'pork': ['varken', 'ham', 'spek', 'bacon', 'pork belly'],
-    'fish': ['vis', 'zalm', 'tonijn', 'salmon', 'tuna', 'cod', 'kabeljauw'],
-    'shrimp': ['garnaal', 'garnalen', 'prawns'],
-    'pasta': ['spaghetti', 'macaroni', 'penne', 'lasagna', 'noedels', 'noodles'],
-    'rice': ['rijst', 'risotto'],
-    'vegetable': ['groente', 'vega', 'vegetarian'],
-    'cheese': ['kaas', 'parmezaan', 'cheddar', 'mozzarella'],
-    'egg': ['ei', 'eieren', 'eggs'],
-    'bread': ['brood', 'toast', 'sandwich'],
-
-    'kip': ['chicken', 'poultry'],
-    'rund': ['beef', 'steak'],
-    'varken': ['pork', 'ham', 'bacon'],
-    'vis': ['fish', 'salmon', 'tuna'],
-    'garnaal': ['shrimp', 'prawns'],
-    'groente': ['vegetable', 'veggie', 'vega'],
-    'ontbijt': ['breakfast'],
-    'lunch': ['middageten'],
-    'avondeten': ['dinner'],
-    'toetje': ['dessert'],
-    'drankje': ['drink', 'cocktail', 'smoothie'],
-    'gezond': ['healthy', 'low-carb', 'salad', 'bowl'],
-    'snel': ['quick', 'fast', '15 mins', 'airfryer'],
-    'airfryer': ['hetelucht'],
-    'bbq': ['barbecue', 'grillen', 'braai']
-  };
+  // Search text is built once per cookbook change rather than for every recipe
+  // on every keystroke. The matching itself (Dutch <-> English synonyms, word
+  // order, accents, short words) lives in lib/search.ts.
+  const searchIndex = React.useMemo(
+    () => new Map(savedRecipes.map(r => [r, searchableText(r)])),
+    [savedRecipes],
+  );
 
   const filteredRecipes = savedRecipes.filter(r => {
-    if (searchQuery.trim()) {
-      const textToSearch = [
-        r.title,
-        r.description,
-        ...labelValues(r),
-        ...(r.ingredients || []).map(i => i?.item || ''),
-      ].join(' ').toLowerCase();
-
-      // Every word has to hit something, and each is translated on its own.
-      // Matching the whole query as one substring made it order-sensitive:
-      // "gochujang chicken" found the recipe, "chicken gochujang" did not, and
-      // "kip curry" found nothing at all because only a bare "kip" was ever
-      // looked up in the table.
-      const words = searchQuery.toLowerCase().split(/\s+/).filter(Boolean);
-      const matches = words.every(word => {
-        const terms = [word, ...(TRANSLATIONS[word] || [])];
-        return terms.some(term => textToSearch.includes(term));
-      });
-      if (!matches) return false;
-    }
+    if (searchQuery.trim() && !matchesQuery(r, searchQuery, searchIndex.get(r))) return false;
     if (selectedCategory !== "All") {
       return hasLabel(r, selectedCategory);
     }
@@ -929,6 +884,15 @@ function HomeContent() {
 
             {/* User Auth Area */}
             <div className={styles.authArea} ref={userMenuRef}>
+              <button
+                type="button"
+                className={styles.langToggle}
+                onClick={() => setLang(lang === 'nl' ? 'en' : 'nl')}
+                title={t.switchLanguage}
+                aria-label={t.switchLanguage}
+              >
+                {lang === 'nl' ? 'EN' : 'NL'}
+              </button>
               {user ? (
                 <>
                   <div
@@ -938,37 +902,37 @@ function HomeContent() {
                     {user.avatar_url && (
                       <img
                         src={user.avatar_url}
-                        alt={user.name || 'User'}
+                        alt={user.name || t.user}
                         referrerPolicy="no-referrer"
                         className={styles.avatar}
                       />
                     )}
                     <span className={styles.userName}>
-                      {user.name?.split(' ')[0] || 'User'}
+                      {user.name?.split(' ')[0] || t.user}
                     </span>
                   </div>
                   {userMenuOpen && (
                     <div className={styles.userMenu}>
                       <div className={styles.userMenuHeader}>
-                        <div style={{ fontWeight: 600 }}>{user.name || 'User'}</div>
+                        <div style={{ fontWeight: 600 }}>{user.name || t.user}</div>
                         <div style={{ fontSize: '0.75rem', opacity: 0.6 }}>{user.email}</div>
                       </div>
                       <div className={styles.userMenuDivider} />
                       <button className={styles.userMenuItem} onClick={() => { setUserMenuOpen(false); setView('cookbook'); }}>
-                        <span>📚</span> My Cookbook ({savedRecipes.length})
+                        <span>📚</span> {t.myCookbook(savedRecipes.length)}
                       </button>
                       <button className={styles.userMenuItem} onClick={handleExportCookbook}>
-                        <span>📥</span> Export Cookbook
+                        <span>📥</span> {t.exportCookbook}
                       </button>
                       <button className={styles.userMenuItem} onClick={() => { setUserMenuOpen(false); handleExportPdf(savedRecipes, true); }}>
-                        <span>📖</span> Cookbook PDF
+                        <span>📖</span> {t.cookbookPdf}
                       </button>
                       <button className={styles.userMenuItem} onClick={handleClearImportCache}>
-                        <span>🔄</span> Reset Import Cache
+                        <span>🔄</span> {t.resetImportCache}
                       </button>
                       <div className={styles.userMenuDivider} />
                       <button className={`${styles.userMenuItem} ${styles.userMenuLogout}`} onClick={handleLogout}>
-                        <span>👋</span> Log Out
+                        <span>👋</span> {t.logOut}
                       </button>
                     </div>
                   )}
@@ -991,7 +955,7 @@ function HomeContent() {
                     transition: 'transform 0.2s ease'
                   }}
                 >
-                  {authLoading ? 'Signing in...' : 'Sign In with Google'}
+                  {authLoading ? t.signingIn : t.signIn}
                 </button>
               )}
             </div>
@@ -1007,7 +971,7 @@ function HomeContent() {
                 opacity: view === 'home' || view === 'details' ? 1 : 0.7
               }}
             >
-              + New Recipe
+              {t.newRecipe}
             </button>
             <button
               onClick={() => setView('cookbook')}
@@ -1017,7 +981,7 @@ function HomeContent() {
                 opacity: view === 'cookbook' ? 1 : 0.7
               }}
             >
-              📚 Cookbook
+              {t.cookbookNav}
             </button>
             <button
               onClick={() => setView('suggest')}
@@ -1027,7 +991,7 @@ function HomeContent() {
                 opacity: view === 'suggest' ? 1 : 0.7
               }}
             >
-              ✨ What to cook
+              {t.whatToCook}
             </button>
           </div>
         </header>
@@ -1038,11 +1002,7 @@ function HomeContent() {
               be started from the cookbook too, where they used to be invisible. */}
           {pendingSync.length > 0 && (
             <div className={styles.syncWarning}>
-              <span>
-                ⚠️ {pendingSync.length} recipe{pendingSync.length === 1 ? '' : 's'} on this device
-                {' '}{pendingSync.length === 1 ? 'has' : 'have'} not reached the cloud, so
-                {' '}{pendingSync.length === 1 ? 'it will' : 'they will'} not appear on your other devices.
-              </span>
+              <span>⚠️ {t.pendingSyncWarning(pendingSync.length)}</span>
               <button
                 type="button"
                 className={styles.button}
@@ -1050,18 +1010,18 @@ function HomeContent() {
                 disabled={syncing || !user}
                 onClick={() => user && retryPendingSync(user.id)}
               >
-                {syncing ? 'Syncing...' : user ? 'Retry sync' : 'Sign in to sync'}
+                {syncing ? t.syncing : user ? t.retrySync : t.signInToSync}
               </button>
             </div>
           )}
 
-          {error && <div className={styles.error}>{error}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>💡 Tip: Try using TikTok or Instagram links instead</small></>}</div>}
+          {error && <div className={styles.error}>{error}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>{t.youtubeTip}</small></>}</div>}
 
           {shareLink && (
             <div className={styles.shareToast}>
               <input ref={shareLinkRef} readOnly value={shareLink} onClick={e => (e.target as HTMLInputElement).select()} className={styles.shareLinkInput} />
               <button onClick={() => copyShareLink(shareLink)} className={styles.button} style={{ whiteSpace: 'nowrap', padding: '0.35rem 0.8rem', fontSize: '0.82rem' }}>
-                {shareCopied ? 'Copied!' : 'Copy'}
+                {shareCopied ? t.copied : t.copy}
               </button>
               <button onClick={() => { setShareLink(null); setShareCopied(false); }} className={styles.iconButton} style={{ opacity: 0.5, padding: '0 0.25rem' }}>×</button>
             </div>
@@ -1081,7 +1041,7 @@ function HomeContent() {
                       autoCapitalize="off"
                       autoComplete="off"
                       spellCheck={false}
-                      placeholder="Paste TikTok, Instagram or YouTube link..."
+                      placeholder={t.urlPlaceholder}
                       value={url}
                       onChange={(e) => setUrl(e.target.value)}
                       className={styles.input}
@@ -1091,8 +1051,8 @@ function HomeContent() {
                       <button
                         type="button"
                         className={styles.clearButton}
-                        aria-label="Clear the link"
-                        title="Clear"
+                        aria-label={t.clearLink}
+                        title={t.clear}
                         onClick={() => { setUrl(''); urlInputRef.current?.focus(); }}
                       >
                         ×
@@ -1100,7 +1060,7 @@ function HomeContent() {
                     )}
                   </div>
                   <button type="submit" disabled={loading} className={styles.button}>
-                    {loading ? 'Extracting...' : 'Get Recipe'}
+                    {loading ? t.extracting : t.getRecipe}
                   </button>
                 </form>
               )}
@@ -1114,17 +1074,17 @@ function HomeContent() {
                   </div>
 
                   {classifying ? (
-                    <p style={{ opacity: 0.6, margin: '1rem 0' }}>Checking which videos are recipes...</p>
+                    <p style={{ opacity: 0.6, margin: '1rem 0' }}>{t.checkingRecipes}</p>
                   ) : (
                     <>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '0.75rem 0 0.5rem' }}>
                         <span style={{ opacity: 0.7, fontSize: '0.85rem' }}>
-                          {selectedVideoIds.size} of {collectionVideos.length} selected
+                          {t.selectedOf(selectedVideoIds.size, collectionVideos.length)}
                         </span>
                         <div style={{ display: 'flex', gap: '0.5rem' }}>
-                          <button onClick={() => setSelectedVideoIds(new Set(collectionVideos.filter(v => !importedVideoIds.has(v.video_id ?? v.url) && !failedVideoIds.has(v.video_id ?? v.url)).map(v => v.video_id ?? v.url)))} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>All</button>
+                          <button onClick={() => setSelectedVideoIds(new Set(collectionVideos.filter(v => !importedVideoIds.has(v.video_id ?? v.url) && !failedVideoIds.has(v.video_id ?? v.url)).map(v => v.video_id ?? v.url)))} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>{t.all}</button>
                           <span style={{ opacity: 0.4 }}>|</span>
-                          <button onClick={() => setSelectedVideoIds(new Set())} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>None</button>
+                          <button onClick={() => setSelectedVideoIds(new Set())} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>{t.none}</button>
                         </div>
                       </div>
 
@@ -1152,13 +1112,13 @@ function HomeContent() {
                                 style={{ accentColor: '#FF6B35', width: '16px', height: '16px', flexShrink: 0 }}
                               />
                               <span style={{ fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                                {v.title || `Video ${i + 1}`}
+                                {v.title || t.video(i + 1)}
                               </span>
                               {alreadyImported && (
-                                <span style={{ fontSize: '0.75rem', opacity: 0.6, flexShrink: 0 }}>already saved</span>
+                                <span style={{ fontSize: '0.75rem', opacity: 0.6, flexShrink: 0 }}>{t.alreadySaved}</span>
                               )}
                               {failedBefore && (
-                                <span style={{ fontSize: '0.75rem', opacity: 0.6, flexShrink: 0 }}>no recipe found</span>
+                                <span style={{ fontSize: '0.75rem', opacity: 0.6, flexShrink: 0 }}>{t.noRecipeFound}</span>
                               )}
                             </label>
                           );
@@ -1166,7 +1126,7 @@ function HomeContent() {
                       </div>
 
                       <button onClick={handleImportCollection} className={styles.saveButton} style={{ margin: 0 }} disabled={selectedVideoIds.size === 0}>
-                        Import {selectedVideoIds.size} Recipe{selectedVideoIds.size !== 1 ? 's' : ''}
+                        {t.importN(selectedVideoIds.size)}
                       </button>
                     </>
                   )}
@@ -1176,13 +1136,13 @@ function HomeContent() {
               {/* Resume banner for an import interrupted by a refresh/close */}
               {resumable && importProgress.status === 'idle' && (
                 <div className={styles.recipeCard} style={{ textAlign: 'center' }}>
-                  <h3 style={{ marginBottom: '0.5rem' }}>Unfinished import</h3>
+                  <h3 style={{ marginBottom: '0.5rem' }}>{t.unfinishedImport}</h3>
                   <p style={{ opacity: 0.7, fontSize: '0.9rem', marginBottom: '1rem' }}>
-                    {resumable.remaining.length} recipe{resumable.remaining.length !== 1 ? 's' : ''} left from your last import.
+                    {t.leftFromLastImport(resumable.remaining.length)}
                   </p>
                   <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
-                    <button onClick={handleResumeImport} className={styles.button}>Resume</button>
-                    <button onClick={dismissImport} className={styles.iconButton} style={{ opacity: 0.6 }}>Discard</button>
+                    <button onClick={handleResumeImport} className={styles.button}>{t.resume}</button>
+                    <button onClick={dismissImport} className={styles.iconButton} style={{ opacity: 0.6 }}>{t.discard}</button>
                   </div>
                 </div>
               )}
@@ -1199,12 +1159,12 @@ function HomeContent() {
                     </div>
                     <h3 style={{ marginBottom: '0.5rem' }}>
                       {running
-                        ? `Importing recipes... ${settled}/${importProgress.total}`
+                        ? t.importing(settled, importProgress.total)
                         : importProgress.status === 'finished'
-                          ? 'Import complete'
+                          ? t.importComplete
                           : importProgress.status === 'paused'
-                            ? 'Import paused'
-                            : 'Import stopped'}
+                            ? t.importPaused
+                            : t.importStopped}
                     </h3>
 
                     {importProgress.stopReason && (
@@ -1214,7 +1174,7 @@ function HomeContent() {
                         borderRadius: '10px', padding: '0.6rem 0.8rem', textAlign: 'left'
                       }}>
                         {importProgress.stopReason}
-                        {resumable && ` ${resumable.remaining.length} recipe${resumable.remaining.length !== 1 ? 's' : ''} are still queued - press Resume to continue.`}
+                        {resumable && t.stillQueued(resumable.remaining.length)}
                       </p>
                     )}
 
@@ -1228,25 +1188,25 @@ function HomeContent() {
                     </div>
 
                     <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', fontSize: '0.85rem', opacity: 0.75, marginBottom: '0.75rem' }}>
-                      <span>✅ {importProgress.done} saved</span>
-                      {importProgress.skipped > 0 && <span>⏭️ {importProgress.skipped} already had</span>}
-                      {importProgress.failed > 0 && <span>⚠️ {importProgress.failed} failed</span>}
+                      <span>✅ {t.savedCount(importProgress.done)}</span>
+                      {importProgress.skipped > 0 && <span>⏭️ {t.skippedCount(importProgress.skipped)}</span>}
+                      {importProgress.failed > 0 && <span>⚠️ {t.failedCount(importProgress.failed)}</span>}
                     </div>
 
                     {running && (
                       <>
                         <p style={{ opacity: 0.6, fontSize: '0.82rem', marginBottom: '0.25rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {importProgress.currentTitle ?? 'Starting...'}
+                          {importProgress.currentTitle ?? t.starting}
                         </p>
                         <p style={{ opacity: 0.5, fontSize: '0.78rem', marginBottom: '1rem' }}>
-                          Keep this tab open. Recipes appear in your cookbook as they finish.
+                          {t.keepTabOpen}
                         </p>
                       </>
                     )}
 
                     {importProgress.errors.length > 0 && (
                       <details style={{ textAlign: 'left', margin: '0 0 1rem', fontSize: '0.8rem', opacity: 0.7 }}>
-                        <summary style={{ cursor: 'pointer' }}>Show {importProgress.errors.length} problem{importProgress.errors.length !== 1 ? 's' : ''}</summary>
+                        <summary style={{ cursor: 'pointer' }}>{t.showProblems(importProgress.errors.length)}</summary>
                         <ul style={{ margin: '0.5rem 0 0', paddingLeft: '1.1rem' }}>
                           {importProgress.errors.map((e, i) => (
                             <li key={i}>{e.title} — {e.reason}</li>
@@ -1257,14 +1217,14 @@ function HomeContent() {
 
                     {running ? (
                       <button onClick={cancelImport} className={styles.iconButton} style={{ opacity: 0.6 }}>
-                        Cancel import
+                        {t.cancelImport}
                       </button>
                     ) : (
                       <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
                         {(importProgress.status === 'cancelled' || importProgress.status === 'paused') && resumable && (
-                          <button onClick={handleResumeImport} className={styles.button}>Resume</button>
+                          <button onClick={handleResumeImport} className={styles.button}>{t.resume}</button>
                         )}
-                        <button onClick={dismissImport} className={styles.iconButton} style={{ opacity: 0.6 }}>Dismiss</button>
+                        <button onClick={dismissImport} className={styles.iconButton} style={{ opacity: 0.6 }}>{t.dismiss}</button>
                       </div>
                     )}
                   </div>
@@ -1276,9 +1236,9 @@ function HomeContent() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
                     <h2 className={styles.recipeTitle}>{recipe.title}</h2>
                     <div style={{ display: 'flex', gap: '0.5rem' }}>
-                      <button onClick={handlePrint} className={styles.iconButton} title="Save as PDF">🖨️</button>
-                      <button onClick={() => recipe && handleShare([recipe])} disabled={shareLoading} className={styles.iconButton} title="Share recipe">🔗</button>
-                      <button onClick={handleDelete} className={styles.iconButton} title="Delete Recipe" style={{ color: '#ff6b6b' }}>🗑️</button>
+                      <button onClick={handlePrint} className={styles.iconButton} title={t.saveAsPdf}>🖨️</button>
+                      <button onClick={() => recipe && handleShare([recipe])} disabled={shareLoading} className={styles.iconButton} title={t.shareRecipe}>🔗</button>
+                      <button onClick={handleDelete} className={styles.iconButton} title={t.deleteRecipe} style={{ color: '#ff6b6b' }}>🗑️</button>
                       <button onClick={() => { setRecipe(null); if (view === 'details') { setView('cookbook'); setTimeout(() => window.scrollTo({ top: cookbookScrollY.current, behavior: 'smooth' }), 50); } }} className={styles.iconButton} style={{ opacity: 0.6 }}>×</button>
                     </div>
                   </div>
@@ -1288,7 +1248,7 @@ function HomeContent() {
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', margin: '10px 0' }}>
                     {labelValues(recipe).map(tag => (
                       <span key={tag} style={{ background: 'rgba(255,255,255,0.2)', padding: '4px 10px', borderRadius: '12px', fontSize: '0.8rem' }}>
-                        {tag}
+                        {labelText(tag, lang)}
                       </span>
                     ))}
                   </div>
@@ -1301,7 +1261,7 @@ function HomeContent() {
 
                   <div className={styles.splitSection}>
                     <div className={styles.ingredients}>
-                      <h3>Ingredients</h3>
+                      <h3>{t.ingredients}</h3>
                       {Object.entries(
                         recipe.ingredients.reduce((acc, ing) => {
                           const group = ing.group || 'Main';
@@ -1312,7 +1272,7 @@ function HomeContent() {
                       ).map(([group, items]) => (
                         <div key={group} style={{ marginBottom: '1rem' }}>
                           <h4 style={{ margin: '0.5rem 0', color: '#FF8E53', fontSize: '0.95rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                            {group}
+                            {labelText(group, lang)}
                           </h4>
                           <ul>
                             {items.map((ing, i) => (
@@ -1325,7 +1285,7 @@ function HomeContent() {
                       ))}
                     </div>
                     <div className={styles.instructions}>
-                      <h3>Instructions</h3>
+                      <h3>{t.instructions}</h3>
                       <ol>
                         {recipe.instructions.map((step, i) => (
                           <li key={i}>{step}</li>
@@ -1335,7 +1295,7 @@ function HomeContent() {
                   </div>
 
                   <button onClick={() => saveRecipe(recipe)} disabled={savedRecipes.some(r => isSameRecipe(r, recipe))} className={styles.saveButton}>
-                    {savedRecipes.some(r => isSameRecipe(r, recipe)) ? 'Saved to Cookbook!' : 'Save to Cookbook'}
+                    {savedRecipes.some(r => isSameRecipe(r, recipe)) ? t.savedToCookbook : t.saveToCookbook}
                   </button>
                 </div>
               )}
@@ -1347,16 +1307,15 @@ function HomeContent() {
             <div className={styles.cookbookSection}>
               <div className={styles.recipeCard}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem' }}>
-                  <h2 style={{ margin: 0 }}>✨ What am I feeling like?</h2>
+                  <h2 style={{ margin: 0 }}>{t.feelingLike}</h2>
                   {(selectedMoods.size > 0 || moodText || hasSuggested) && (
                     <button type="button" onClick={clearMood} className={styles.textButton}>
-                      Reset
+                      {t.reset}
                     </button>
                   )}
                 </div>
                 <p style={{ opacity: 0.65, fontSize: '0.88rem', margin: '0.35rem 0 1rem' }}>
-                  Picks from the {savedRecipes.length} recipe{savedRecipes.length === 1 ? '' : 's'} in your
-                  cookbook - it only ever suggests something you have actually saved.
+                  {t.suggestExplainer(savedRecipes.length)}
                 </p>
 
                 <div className={styles.filterContainer} style={{ paddingBottom: '0.6rem', marginBottom: '0.6rem' }}>
@@ -1371,7 +1330,7 @@ function HomeContent() {
                         return next;
                       })}
                     >
-                      {chip}
+                      {labelText(chip, lang)}
                     </button>
                   ))}
                 </div>
@@ -1381,7 +1340,7 @@ function HomeContent() {
                     <input
                       ref={moodInputRef}
                       type="text"
-                      placeholder="Anything else? e.g. 'nothing heavy, no oven, 20 minutes'"
+                      placeholder={t.moodPlaceholder}
                       value={moodText}
                       onChange={(e) => setMoodText(e.target.value)}
                       className={styles.input}
@@ -1390,8 +1349,8 @@ function HomeContent() {
                       <button
                         type="button"
                         className={styles.clearButton}
-                        aria-label="Clear"
-                        title="Clear"
+                        aria-label={t.clear}
+                        title={t.clear}
                         onClick={() => { setMoodText(''); moodInputRef.current?.focus(); }}
                       >
                         ×
@@ -1399,13 +1358,13 @@ function HomeContent() {
                     )}
                   </div>
                   <button type="submit" className={styles.button} disabled={suggestLoading || savedRecipes.length === 0}>
-                    {suggestLoading ? 'Thinking...' : selectedMoods.size === 0 && !moodText ? 'Surprise me' : 'Suggest'}
+                    {suggestLoading ? t.thinking : selectedMoods.size === 0 && !moodText ? t.surpriseMe : t.suggest}
                   </button>
                 </form>
 
                 {savedRecipes.length === 0 && (
                   <p style={{ opacity: 0.6, fontSize: '0.88rem', marginTop: '1rem' }}>
-                    Save a few recipes first and this will have something to pick from.
+                    {t.saveFirst}
                   </p>
                 )}
               </div>
@@ -1418,7 +1377,7 @@ function HomeContent() {
 
               {suggestConsidered && suggestConsidered.considered < suggestConsidered.total && !suggestLoading && (
                 <p style={{ opacity: 0.5, margin: '-0.5rem 0 1rem', fontSize: '0.78rem' }}>
-                  Considered the {suggestConsidered.considered} most relevant of your {suggestConsidered.total} recipes.
+                  {t.considered(suggestConsidered.considered, suggestConsidered.total)}
                 </p>
               )}
 
@@ -1460,8 +1419,8 @@ function HomeContent() {
                         <h4>{suggested.title}</h4>
                         {reason && <p className={styles.suggestReason}>{reason}</p>}
                         <div className={styles.tagsRow}>
-                          {labelValues(suggested).slice(0, 3).map(t => (
-                            <span key={t}>{t}</span>
+                          {labelValues(suggested).slice(0, 3).map(tag => (
+                            <span key={tag}>{labelText(tag, lang)}</span>
                           ))}
                         </div>
                       </div>
@@ -1472,7 +1431,7 @@ function HomeContent() {
 
               {hasSuggested && !suggestLoading && !suggestError && suggestions.length === 0 && savedRecipes.length > 0 && (
                 <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>
-                  Nothing in your cookbook really fits that. Try fewer chips, or different wording.
+                  {t.nothingFits}
                 </p>
               )}
             </div>
@@ -1482,13 +1441,13 @@ function HomeContent() {
           {view === 'cookbook' && (
             <div className={styles.cookbookSection}>
               <div className={styles.cookbookHeader}>
-                <h2>My Cookbook ({savedRecipes.length})</h2>
+                <h2>{t.myCookbook(savedRecipes.length)}</h2>
                 <div className={styles.cookbookTools}>
                   <div className={styles.searchWrap}>
                     <input
                       ref={searchInputRef}
                       type="text"
-                      placeholder="Search (try 'Kip' or 'Chicken')..."
+                      placeholder={t.searchPlaceholder}
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       className={styles.searchInput}
@@ -1497,8 +1456,8 @@ function HomeContent() {
                       <button
                         type="button"
                         className={styles.clearButton}
-                        aria-label="Clear the search"
-                        title="Clear"
+                        aria-label={t.clearSearch}
+                        title={t.clear}
                         onClick={() => { setSearchQuery(''); searchInputRef.current?.focus(); }}
                       >
                         ×
@@ -1510,7 +1469,7 @@ function HomeContent() {
                     className={`${styles.button} ${styles.toolButton}`}
                     style={selectMode ? { background: 'var(--primary-gradient)' } : undefined}
                   >
-                    {selectMode ? 'Cancel' : 'Select'}
+                    {selectMode ? t.cancel : t.select}
                   </button>
                   {selectMode && (
                     <button
@@ -1521,7 +1480,7 @@ function HomeContent() {
                       }}
                       className={`${styles.button} ${styles.toolButton}`}
                     >
-                      {filteredRecipes.every(r => bulkSelected.has(recipeKey(r))) ? 'Deselect All' : 'Select All'}
+                      {filteredRecipes.every(r => bulkSelected.has(recipeKey(r))) ? t.deselectAll : t.selectAll}
                     </button>
                   )}
                 </div>
@@ -1538,25 +1497,25 @@ function HomeContent() {
                 <div className={styles.bulkBar}>
                   <span className={styles.bulkCount}>
                     {bulkSelected.size > 0
-                      ? `${bulkSelected.size} selected`
-                      : 'Tap recipes, or hold one and drag'}
+                      ? t.nSelected(bulkSelected.size)
+                      : t.selectHint}
                   </span>
                   <div className={styles.bulkActions}>
                     <button
                       onClick={() => handleExportPdf(savedRecipes.filter(r => bulkSelected.has(recipeKey(r))), false)}
                       className={`${styles.button} ${styles.bulkButton}`}
                       disabled={bulkSelected.size === 0}
-                      title="Export the selected recipes as one PDF, one recipe per page"
+                      title={t.exportPdfTitle}
                     >
-                      🖨️ Export<span className={styles.bulkLabel}> PDF</span>
+                      🖨️ {t.export}<span className={styles.bulkLabel}> PDF</span>
                     </button>
                     <button
                       onClick={() => handleExportPdf(savedRecipes.filter(r => bulkSelected.has(recipeKey(r))), true)}
                       className={`${styles.button} ${styles.bulkButton}`}
                       disabled={bulkSelected.size === 0}
-                      title="Export as a cookbook PDF: cover page, table of contents and recipes grouped by category"
+                      title={t.cookbookPdfTitle}
                     >
-                      📖 Cookbook<span className={styles.bulkLabel}> PDF</span>
+                      📖 {t.cookbook}<span className={styles.bulkLabel}> PDF</span>
                     </button>
                     <button
                       onClick={() => {
@@ -1566,7 +1525,7 @@ function HomeContent() {
                       className={`${styles.button} ${styles.bulkButton} ${styles.bulkPrimary}`}
                       disabled={shareLoading || bulkSelected.size === 0}
                     >
-                      🔗 {shareLoading ? 'Creating link...' : 'Share'}
+                      🔗 {shareLoading ? t.creatingLink : t.share}
                     </button>
                   </div>
                 </div>
@@ -1578,7 +1537,7 @@ function HomeContent() {
                   className={`${styles.filterChip} ${selectedCategory === "All" ? styles.filterChipActive : ''}`}
                   onClick={() => setSelectedCategory("All")}
                 >
-                  All
+                  {t.all}
                 </button>
                 {/* Chips come from what is actually saved, most common first, so
                     every filter offered returns something. The old fixed list of
@@ -1588,9 +1547,9 @@ function HomeContent() {
                     key={facet.value}
                     className={`${styles.filterChip} ${selectedCategory === facet.value ? styles.filterChipActive : ''}`}
                     onClick={() => setSelectedCategory(facet.value)}
-                    title={`${facet.count} recipe${facet.count === 1 ? '' : 's'}`}
+                    title={t.recipeCount(facet.count)}
                   >
-                    {facet.value}
+                    {labelText(facet.value, lang)}
                     <span className={styles.chipCount}>{facet.count}</span>
                   </button>
                 ))}
@@ -1614,7 +1573,7 @@ function HomeContent() {
               >
                 {cookbookLoading && savedRecipes.length === 0 ? (
                   <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>
-                    Loading your recipes...
+                    {t.loadingRecipes}
                   </p>
                 ) : filteredRecipes.map((r, idx) => {
                   const key = recipeKey(r);
@@ -1683,8 +1642,8 @@ function HomeContent() {
                       <div className={styles.cookbookContent}>
                         <h4>{r.title}</h4>
                         <div className={styles.tagsRow}>
-                          {labelValues(r).slice(0, 3).map(t => (
-                            <span key={t}>{t}</span>
+                          {labelValues(r).slice(0, 3).map(tag => (
+                            <span key={tag}>{labelText(tag, lang)}</span>
                           ))}
                         </div>
                       </div>
@@ -1693,12 +1652,12 @@ function HomeContent() {
                 })}
                 {!cookbookLoading && filteredRecipes.length === 0 && savedRecipes.length > 0 && (
                   <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>
-                    No recipes match your filter.
+                    {t.noMatch}
                   </p>
                 )}
                 {!cookbookLoading && savedRecipes.length === 0 && (
                   <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>
-                    No recipes saved yet. Extract one to get started!
+                    {t.noRecipesYet}
                   </p>
                 )}
               </div>

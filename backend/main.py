@@ -1469,6 +1469,8 @@ class RecommendRequest(BaseModel):
     moods: List[str] = []
     recipes: List[RecommendCandidate] = []
     limit: int = 5
+    # UI language; "nl" gets the intro and reasons in Dutch.
+    language: str = "en"
 
 
 MAX_RECOMMEND_CANDIDATES = 300
@@ -1532,7 +1534,14 @@ def _build_listing(candidates: list, budget: int = 0) -> tuple:
     return "\n".join(kept), len(kept)
 
 
-def _recommend_prompt(wanted: str, listing: str, limit: int) -> str:
+def _recommend_prompt(wanted: str, listing: str, limit: int, language: str = "en") -> str:
+    # Recipes are stored in English; only the text written for the user follows
+    # the UI language. Ids are never translated.
+    language_rule = (
+        '\n- Write "intro" and every "reason" in Dutch (Nederlands).'
+        if (language or "").lower().startswith("nl")
+        else ""
+    )
     return f"""The user is deciding what to cook tonight. In their own words:
 
 "{wanted}"
@@ -1547,7 +1556,7 @@ Rules:
 - "reason" is one short sentence (max 18 words) saying why THIS recipe fits what they asked for.
   Be concrete - name the ingredient, the cooking time or the flavour that makes it a match.
 - If nothing really fits, return fewer picks rather than padding with bad ones.
-- "intro" is one friendly sentence (max 20 words) summarising the pick. No greeting, no emoji.
+- "intro" is one friendly sentence (max 20 words) summarising the pick. No greeting, no emoji.{language_rule}
 
 Return ONLY this JSON object:
 {{"intro": "string", "picks": [{{"id": "string", "reason": "string"}}]}}"""
@@ -1581,7 +1590,7 @@ def recommend(request: RecommendRequest, _rl: None = Depends(rate_limit)):
                 "Recommend listing trimmed to %d of %d recipes (budget %d chars)",
                 considered, len(request.recipes), budget,
             )
-        return _recommend_prompt(wanted, listing, limit), considered
+        return _recommend_prompt(wanted, listing, limit, request.language), considered
 
     # Providers disagree about how big a prompt may be, and Groq's limit moves
     # with what the same minute has already spent. Rather than guess low for

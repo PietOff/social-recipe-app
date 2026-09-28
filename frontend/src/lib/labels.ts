@@ -1,4 +1,5 @@
 import { Recipe } from '../types';
+import { normalize, startsWord } from './text';
 
 /**
  * Labels derived from a recipe's own content.
@@ -12,6 +13,12 @@ import { Recipe } from '../types';
  */
 
 export type LabelKind = 'time' | 'protein' | 'method' | 'effort' | 'tag';
+
+/** Case-, hyphen- and spacing-insensitive key: the extractor's "One-Pan" tag and
+ *  the derived "One pan" label are the same label, not two chips. */
+export function labelKey(value: string): string {
+  return value.toLowerCase().replace(/[-_\s]+/g, ' ').trim();
+}
 
 export interface Label {
   value: string;
@@ -65,47 +72,61 @@ function timeLabel(recipe: Recipe): string | null {
 }
 
 // Matched against title + tags + ingredient names. Dutch terms included because
-// a good share of the source videos are Dutch.
+// a good share of the source videos are Dutch. Terms match at the start of a
+// word (see `matchFirst`), so no bare "mince" here: it tagged every recipe with
+// "minced garlic" as beef.
 const PROTEIN_TERMS: Array<[string, string[]]> = [
   ['Chicken', ['chicken', 'kip', 'poultry', 'turkey', 'kalkoen']],
-  ['Beef', ['beef', 'rund', 'steak', 'biefstuk', 'mince', 'gehakt', 'brisket']],
+  ['Beef', ['beef', 'rund', 'steak', 'biefstuk', 'minced beef', 'minced meat', 'ground beef', 'ground meat', 'gehakt', 'brisket']],
   ['Pork', ['pork', 'varken', 'bacon', 'spek', 'ham', 'chorizo', 'sausage', 'worst']],
   ['Fish', ['fish', 'vis', 'salmon', 'zalm', 'tuna', 'tonijn', 'cod', 'kabeljauw']],
   ['Seafood', ['shrimp', 'prawn', 'garnaal', 'garnalen', 'squid', 'inktvis', 'mussel', 'mossel']],
   ['Lamb', ['lamb', 'lamsvlees']],
 ];
 
-const MEAT_TERMS = PROTEIN_TERMS.flatMap(([, terms]) => terms);
+// Meat that gets no label of its own but still rules out "Vegetarian" - without
+// these, plain "meatballs" or "duck" came out vegetarian.
+const MEAT_TERMS = [
+  ...PROTEIN_TERMS.flatMap(([, terms]) => terms),
+  'meat', 'vlees', 'veal', 'kalfs', 'duck', 'eend', 'venison', 'hert', 'salami',
+  'pepperoni', 'prosciutto', 'pancetta', 'anchov', 'ansjovis', 'gelatin',
+];
 
 const METHOD_TERMS: Array<[string, string[]]> = [
   ['Airfryer', ['airfryer', 'air fryer', 'heteluchtfriteuse']],
   ['BBQ / grill', ['bbq', 'barbecue', 'grill', 'grillen', 'braai', 'smoker']],
-  ['Oven', ['oven', 'bake', 'baked', 'roast', 'roasted', 'bakken', 'braden']],
+  ['Oven', ['oven', 'bake', 'baking', 'roast', 'bakken', 'braden']],
   ['Slow cooker', ['slow cooker', 'crockpot', 'slowcooker', 'sous vide']],
   ['No cook', ['no-cook', 'no cook', 'geen oven', 'raw']],
 ];
 
 function haystack(recipe: Recipe): string {
-  return [
+  const text = [
     recipe.title,
     recipe.description,
     ...(recipe.tags || []),
     recipe.category || '',
     ...(recipe.ingredients || []).map(i => i?.item || ''),
   ]
-    .join(' ')
-    .toLowerCase();
+    .join(' ');
+  return normalize(text);
 }
 
+/**
+ * First label whose terms start a word in `text`. Word starts rather than
+ * substrings: "raw" used to match "strawberry" (so strawberry desserts were
+ * "No cook") and "ham" matched "champignon". Prefixes still catch plurals and
+ * Dutch compounds ("kip" in "kipfilet", "grill" in "grilled").
+ */
 function matchFirst(text: string, table: Array<[string, string[]]>): string | null {
   for (const [label, terms] of table) {
-    if (terms.some(term => text.includes(term))) return label;
+    if (terms.some(term => startsWord(text, term))) return label;
   }
   return null;
 }
 
 function methodLabel(recipe: Recipe): string | null {
-  const instructions = (recipe.instructions || []).join(' ').toLowerCase();
+  const instructions = normalize((recipe.instructions || []).join(' '));
   return matchFirst(haystack(recipe) + ' ' + instructions, METHOD_TERMS);
 }
 
@@ -115,7 +136,7 @@ function proteinLabel(recipe: Recipe): string | null {
   if (protein) return protein;
   // Only claim "Vegetarian" when there is something to go on: an empty
   // ingredient list is unknown, not meat-free.
-  if ((recipe.ingredients || []).length > 0 && !MEAT_TERMS.some(t => text.includes(t))) {
+  if ((recipe.ingredients || []).length > 0 && !MEAT_TERMS.some(t => startsWord(text, t))) {
     return 'Vegetarian';
   }
   return null;
@@ -125,8 +146,9 @@ function effortLabels(recipe: Recipe): string[] {
   const out: string[] = [];
   const count = (recipe.ingredients || []).length;
   if (count > 0 && count <= 5) out.push('5 ingredients or fewer');
-  const steps = (recipe.instructions || []).join(' ').toLowerCase();
-  if (/one[- ]pan|one[- ]pot|sheet pan|single pan|één pan|traybake/.test(steps + ' ' + haystack(recipe))) {
+  // Normalised text has no accents or hyphens: "één pan" is "een pan" here.
+  const steps = normalize((recipe.instructions || []).join(' '));
+  if (/one pan|one pot|sheet pan|single pan|een pan|traybake/.test(steps + ' ' + haystack(recipe))) {
     out.push('One pan');
   }
   return out;
@@ -154,10 +176,10 @@ export function recipeLabels(recipe: Recipe): Label[] {
     labels.push({ value, kind: 'effort' });
   }
 
-  // Case-insensitive de-dupe, keeping the first spelling seen.
+  // De-dupe on labelKey, keeping the first spelling seen.
   const seen = new Set<string>();
   return labels.filter(label => {
-    const key = label.value.toLowerCase();
+    const key = labelKey(label.value);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -169,8 +191,8 @@ export function labelValues(recipe: Recipe): string[] {
 }
 
 export function hasLabel(recipe: Recipe, value: string): boolean {
-  const needle = value.toLowerCase();
-  return labelValues(recipe).some(v => v.toLowerCase() === needle);
+  const needle = labelKey(value);
+  return labelValues(recipe).some(v => labelKey(v) === needle);
 }
 
 export interface LabelFacet {
@@ -188,7 +210,7 @@ export function labelFacets(recipes: Recipe[], minCount = 2): LabelFacet[] {
 
   for (const recipe of recipes) {
     for (const label of recipeLabels(recipe)) {
-      const key = label.value.toLowerCase();
+      const key = labelKey(label.value);
       const existing = counts.get(key);
       if (existing) existing.count += 1;
       else counts.set(key, { value: label.value, kind: label.kind, count: 1 });
