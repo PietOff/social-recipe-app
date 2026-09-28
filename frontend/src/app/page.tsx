@@ -43,6 +43,7 @@ import {
   saveRecipeToCloud,
   recipeKey,
   isSameRecipe,
+  ingredientQuantity,
   videoIdFromUrl,
   thumbnailSrc,
   loadFailedImportIds,
@@ -55,6 +56,8 @@ import { hasLabel, labelFacets, labelValues } from '../lib/labels';
 import { exportRecipesToPdf } from '../lib/printExport';
 import { getStrings, labelText, useLang } from '../lib/i18n';
 import { matchesQuery, searchableText } from '../lib/search';
+import { localizeError } from '../lib/errors';
+import { isSortOrder, sortRecipes, SortOrder } from '../lib/sort';
 
 interface User {
   id: string;
@@ -198,6 +201,7 @@ function HomeContent() {
           servings: data.servings || null,
           source_url: data.source_url || null,
           video_id: data.video_id || null,
+          created_at: typeof data.created_at === 'number' ? data.created_at : undefined,
         });
       });
       // An empty result is only trustworthy when it came from the server AND we
@@ -359,6 +363,21 @@ function HomeContent() {
     setFailedVideoIds(new Set());
   };
 
+  /**
+   * Puts a recipe back after its cloud delete failed. The old code only logged
+   * the error: the recipe vanished from the screen but not from Firestore, and
+   * came back on the next load as if the delete had been ignored.
+   */
+  const restoreAfterFailedDelete = (removed: Recipe) => {
+    setSavedRecipes(prev => {
+      if (prev.some(r => isSameRecipe(r, removed))) return prev;
+      const next = [removed, ...prev];
+      localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(next));
+      return next;
+    });
+    setCookbookError(getStrings().errDeleteFailed(removed.title || getStrings().recipeFallback));
+  };
+
   const saveRecipe = async (recipeToSave: Recipe) => {
     // Identity is video_id / source_url / doc id - NOT the title. Keying on the
     // title meant two recipes called "Chicken Curry" clobbered each other.
@@ -377,10 +396,13 @@ function HomeContent() {
           localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(newSaved));
         } catch (e) {
           console.error('Failed to delete from Firestore', e);
+          restoreAfterFailedDelete(recipeToDelete);
         }
       }
     } else {
-      // Optimistic update
+      // Optimistic update. created_at is set here so an unsaved-to-cloud or
+      // signed-out recipe still sorts as the newest.
+      recipeToSave = { ...recipeToSave, created_at: recipeToSave.created_at || Date.now() };
       const optimistic = [recipeToSave, ...savedRecipes];
       setSavedRecipes(optimistic);
 
@@ -437,8 +459,11 @@ function HomeContent() {
     setHasSuggested(false);
   };
 
+  // The recipe is written in the UI language. Tags stay English either way
+  // (see parse_with_llm), so filters and labels keep working across a
+  // cookbook that mixes both.
   const extractSingleRecipe = async (videoUrl: string): Promise<Recipe> =>
-    apiPost<Recipe>('/extract-recipe', { url: videoUrl.trim() });
+    apiPost<Recipe>('/extract-recipe', { url: videoUrl.trim(), language: lang });
 
   /** Merges a recipe saved by the background import into local state + cache. */
   const mergeImportedRecipe = React.useCallback((saved: Recipe) => {
@@ -563,22 +588,26 @@ function HomeContent() {
   const handleDelete = async () => {
     if (!recipe) return;
     if (confirm(t.confirmDelete)) {
+      const removed = savedRecipes.find(r => isSameRecipe(r, recipe)) ?? recipe;
       const updated = savedRecipes.filter(r => !isSameRecipe(r, recipe));
       setSavedRecipes(updated);
+      setRecipe(null);
+      setView('cookbook');
 
       if (user) {
-        localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(updated));
-        if (recipe.id) {
+        if (removed.id) {
           try {
-            await deleteDoc(doc(db, 'recipes', recipe.id));
-          } catch (e) { console.error("Firestore delete failed", e); }
+            await deleteDoc(doc(db, 'recipes', removed.id));
+          } catch (e) {
+            console.error('Firestore delete failed', e);
+            restoreAfterFailedDelete(removed);
+            return;
+          }
         }
+        localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(updated));
       } else {
         localStorage.setItem('chefSocial_cookbook', JSON.stringify(updated));
       }
-
-      setRecipe(null);
-      setView('cookbook');
     }
   };
 
@@ -867,13 +896,31 @@ function HomeContent() {
     [savedRecipes],
   );
 
-  const filteredRecipes = savedRecipes.filter(r => {
-    if (searchQuery.trim() && !matchesQuery(r, searchQuery, searchIndex.get(r))) return false;
-    if (selectedCategory !== "All") {
-      return hasLabel(r, selectedCategory);
-    }
-    return true;
-  });
+  // --- SORTING ---
+  const [sortOrder, setSortOrderState] = useState<SortOrder>('newest');
+  React.useEffect(() => {
+    try {
+      const stored = localStorage.getItem('chefSocial_sort');
+      if (isSortOrder(stored)) setSortOrderState(stored);
+    } catch { /* storage blocked */ }
+  }, []);
+  const setSortOrder = (order: SortOrder) => {
+    setSortOrderState(order);
+    try { localStorage.setItem('chefSocial_sort', order); } catch { /* storage blocked */ }
+  };
+
+  // Filtered and sorted once per change. Everything below - the grid, select
+  // all, drag-select indices - works on this one list, so they always agree.
+  const filteredRecipes = React.useMemo(() => {
+    const matching = savedRecipes.filter(r => {
+      if (searchQuery.trim() && !matchesQuery(r, searchQuery, searchIndex.get(r))) return false;
+      if (selectedCategory !== "All") {
+        return hasLabel(r, selectedCategory);
+      }
+      return true;
+    });
+    return sortRecipes(matching, sortOrder, lang === 'nl' ? 'nl' : 'en');
+  }, [savedRecipes, searchQuery, searchIndex, selectedCategory, sortOrder, lang]);
 
   return (
     <main className={styles.main}>
@@ -1015,7 +1062,7 @@ function HomeContent() {
             </div>
           )}
 
-          {error && <div className={styles.error}>{error}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>{t.youtubeTip}</small></>}</div>}
+          {error && <div className={styles.error}>{localizeError(error, lang)}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>{t.youtubeTip}</small></>}</div>}
 
           {shareLink && (
             <div className={styles.shareToast}>
@@ -1173,7 +1220,7 @@ function HomeContent() {
                         background: 'rgba(255,193,7,0.12)', border: '1px solid rgba(255,193,7,0.35)',
                         borderRadius: '10px', padding: '0.6rem 0.8rem', textAlign: 'left'
                       }}>
-                        {importProgress.stopReason}
+                        {localizeError(importProgress.stopReason, lang)}
                         {resumable && t.stillQueued(resumable.remaining.length)}
                       </p>
                     )}
@@ -1209,7 +1256,7 @@ function HomeContent() {
                         <summary style={{ cursor: 'pointer' }}>{t.showProblems(importProgress.errors.length)}</summary>
                         <ul style={{ margin: '0.5rem 0 0', paddingLeft: '1.1rem' }}>
                           {importProgress.errors.map((e, i) => (
-                            <li key={i}>{e.title} — {e.reason}</li>
+                            <li key={i}>{e.title} — {localizeError(e.reason, lang)}</li>
                           ))}
                         </ul>
                       </details>
@@ -1277,7 +1324,7 @@ function HomeContent() {
                           <ul>
                             {items.map((ing, i) => (
                               <li key={i}>
-                                <b>{ing.amount} {(ing.unit && !ing.amount?.toLowerCase().endsWith(ing.unit.toLowerCase())) ? ing.unit : ''}</b> {ing.item}
+                                <b>{ingredientQuantity(ing)}</b> {ing.item}
                               </li>
                             ))}
                           </ul>
@@ -1369,7 +1416,7 @@ function HomeContent() {
                 )}
               </div>
 
-              {suggestError && <div className={styles.error} style={{ marginBottom: '1rem' }}>{suggestError}</div>}
+              {suggestError && <div className={styles.error} style={{ marginBottom: '1rem' }}>{localizeError(suggestError, lang)}</div>}
 
               {suggestIntro && !suggestLoading && (
                 <p style={{ opacity: 0.85, margin: '0 0 1rem', fontSize: '0.95rem' }}>{suggestIntro}</p>
@@ -1464,6 +1511,19 @@ function HomeContent() {
                       </button>
                     )}
                   </div>
+                  <select
+                    value={sortOrder}
+                    onChange={(e) => { if (isSortOrder(e.target.value)) setSortOrder(e.target.value); }}
+                    className={styles.sortSelect}
+                    aria-label={t.sortLabel}
+                    title={t.sortLabel}
+                  >
+                    <option value="newest">{t.sortNewest}</option>
+                    <option value="oldest">{t.sortOldest}</option>
+                    <option value="az">{t.sortAz}</option>
+                    <option value="za">{t.sortZa}</option>
+                    <option value="quickest">{t.sortQuickest}</option>
+                  </select>
                   <button
                     onClick={() => { setSelectMode(p => !p); setBulkSelected(new Set()); anchorRef.current = null; }}
                     className={`${styles.button} ${styles.toolButton}`}
@@ -1556,7 +1616,7 @@ function HomeContent() {
               </div>
 
               {cookbookError && (
-                <div className={styles.error} style={{ marginBottom: '1rem' }}>{cookbookError}</div>
+                <div className={styles.error} style={{ marginBottom: '1rem' }}>{localizeError(cookbookError, lang)}</div>
               )}
 
               {/* Grid View */}

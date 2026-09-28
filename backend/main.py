@@ -315,6 +315,9 @@ app.add_middleware(
 
 class ExtractRequest(BaseModel):
     url: str
+    # Language to write the recipe in ("en" or "nl"). Tags stay English
+    # whatever this is; see parse_with_llm.
+    language: str = "en"
     # NOTE: caller-supplied API keys are deliberately no longer honoured.
     # Keys come from the server environment only.
 
@@ -1162,11 +1165,27 @@ def generate_json(prompt: str, system: str) -> dict:
     )
 
 
-def parse_with_llm(text_data: str, api_key: str):
+def _language_rule(language: str) -> str:
+    """Rule 6 of the extraction prompt. Tags are the exception to the output
+    language: the app filters, labels and orders cookbook chapters by those
+    exact English words, so a Dutch recipe still gets English tags."""
+    if (language or "").lower().startswith("nl"):
+        return (
+            "6. Write the title, description, ingredient names, ingredient groups, instructions, "
+            "prep_time, cook_time and servings in Dutch (Nederlands), regardless of input language. "
+            "Use Dutch units and words (e.g. \"10 minuten\", \"2 personen\", \"eetlepel\"). "
+            "Two exceptions: tags are always picked from the English list above, spelled exactly as shown, "
+            "and the default ingredient group stays \"Main\"."
+        )
+    return "6. ALWAYS output everything in English, regardless of input language."
+
+
+def parse_with_llm(text_data: str, api_key: str, language: str = "en"):
     """
     Uses Google Gemini (1.5 Flash) to parse the raw text into a structured Recipe.
     """
     try:
+        language_rule = _language_rule(language)
         prompt = f"""
         You are an expert chef and data parser. Extract a structured recipe from the text below, which comes from a social media cooking video (TikTok/Instagram/YouTube). The text may include video titles, descriptions, captions, subtitles, and/or an audio transcript.
 
@@ -1179,7 +1198,7 @@ def parse_with_llm(text_data: str, api_key: str):
            - Meal: "Breakfast" "Brunch" "Lunch" "Dinner" "Snack" "Dessert" "Appetizer" "Drink"
            - Dish: "Airfryer" "BBQ" "Slow Cooker" "Pasta" "Pizza" "Burger" "Sandwich" "Wrap" "Tacos" "Salad" "Bowl" "Soup" "Stew" "Curry" "Rice" "Meat" "Fish" "Chicken" "Vegetarian" "Vegan" "Low-Carb" "High-Protein" "Smoothie" "Cocktail" "Sauce" "Side"
            - Extra: "Healthy" "Quick" "Spicy" "Traditional" "One-Pan" etc. if clearly applicable
-        6. ALWAYS output everything in English, regardless of input language.
+        {language_rule}
         7. If the text contains no recipe at all, still return the JSON schema with empty arrays and explain in description.
 
         Return ONLY a valid JSON object — no markdown, no explanation:
@@ -1732,7 +1751,7 @@ def extract_recipe(request: ExtractRequest, _rl: None = Depends(rate_limit)):
 
     # --- STAGE 1: caption + subtitles (no audio download) ---
     raw_text, thumbnail_url, _ = get_video_data(safe_url, extract_audio=False)
-    recipe_data = parse_with_llm(raw_text, "")
+    recipe_data = parse_with_llm(raw_text, "", request.language)
     if recipe_has_content(recipe_data):
         return finalize(recipe_data, thumbnail_url, "caption/subtitles")
 
@@ -1761,7 +1780,7 @@ def extract_recipe(request: ExtractRequest, _rl: None = Depends(rate_limit)):
 
     if transcript.strip():
         raw_text += f"\n\n[AUDIO TRANSCRIPT]:\n{transcript.strip()}"
-        recipe_data = parse_with_llm(raw_text, "")
+        recipe_data = parse_with_llm(raw_text, "", request.language)
         if recipe_has_content(recipe_data):
             return finalize(recipe_data, thumbnail_url, "audio transcript")
         logger.info("Audio transcript still yielded no recipe; escalating to vision")
@@ -1824,7 +1843,7 @@ def extract_recipe(request: ExtractRequest, _rl: None = Depends(rate_limit)):
         shutil.rmtree(work_dir, ignore_errors=True)
 
     if added_visual:
-        recipe_data = parse_with_llm(raw_text, "")
+        recipe_data = parse_with_llm(raw_text, "", request.language)
 
     if not recipe_has_content(recipe_data):
         logger.info(f"No recipe could be extracted from {safe_url} after all stages")

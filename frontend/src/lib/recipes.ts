@@ -1,6 +1,6 @@
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Recipe } from '../types';
+import { Ingredient, Recipe } from '../types';
 
 /** Pulls the platform video id out of a TikTok (numeric) or YouTube
  *  (11-char; watch?v=, youtu.be, /shorts/, /embed/) URL. Must stay in sync
@@ -89,6 +89,15 @@ export function thumbnailSrc(recipe: Partial<Recipe>): string | undefined {
   return recipe.image_url || recipe.image || undefined;
 }
 
+/** "400 g" from amount + unit, without doubling a unit the amount already
+ *  carries: the extractor often returns amount "400g" with unit "g". */
+export function ingredientQuantity(ing: Pick<Ingredient, 'amount' | 'unit'>): string {
+  const amount = (ing.amount || '').trim();
+  let unit = (ing.unit || '').trim();
+  if (unit && amount.toLowerCase().endsWith(unit.toLowerCase())) unit = '';
+  return [amount, unit].filter(Boolean).join(' ');
+}
+
 export function toFirestoreDoc(uid: string, recipe: Recipe) {
   return {
     user_id: uid,
@@ -103,15 +112,17 @@ export function toFirestoreDoc(uid: string, recipe: Recipe) {
     servings: recipe.servings || null,
     source_url: recipe.source_url || null,
     video_id: recipe.video_id || videoIdFromUrl(recipe.source_url) || null,
-    created_at: Date.now(),
+    // Kept on re-save, so re-syncing a recipe does not move it to the top.
+    created_at: recipe.created_at || Date.now(),
   };
 }
 
 /** Upserts a recipe under its deterministic ID. Returns the recipe with `id` set. */
 export async function saveRecipeToCloud(uid: string, recipe: Recipe): Promise<Recipe> {
   const id = await recipeDocId(uid, recipe);
-  await setDoc(doc(db, 'recipes', id), toFirestoreDoc(uid, recipe));
-  return { ...recipe, id };
+  const data = toFirestoreDoc(uid, recipe);
+  await setDoc(doc(db, 'recipes', id), data);
+  return { ...recipe, id, created_at: data.created_at };
 }
 
 export async function recipeExistsInCloud(uid: string, recipe: Partial<Recipe>): Promise<boolean> {

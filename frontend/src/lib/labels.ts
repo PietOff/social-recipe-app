@@ -77,7 +77,7 @@ function timeLabel(recipe: Recipe): string | null {
 // "minced garlic" as beef.
 const PROTEIN_TERMS: Array<[string, string[]]> = [
   ['Chicken', ['chicken', 'kip', 'poultry', 'turkey', 'kalkoen']],
-  ['Beef', ['beef', 'rund', 'steak', 'biefstuk', 'minced beef', 'minced meat', 'ground beef', 'ground meat', 'gehakt', 'brisket']],
+  ['Beef', ['beef', 'rund', 'steak', 'biefstuk', 'minced beef', 'minced meat', 'ground beef', 'ground meat', 'gehaktbal', 'brisket']],
   ['Pork', ['pork', 'varken', 'bacon', 'spek', 'ham', 'chorizo', 'sausage', 'worst']],
   ['Fish', ['fish', 'vis', 'salmon', 'zalm', 'tuna', 'tonijn', 'cod', 'kabeljauw']],
   ['Seafood', ['shrimp', 'prawn', 'garnaal', 'garnalen', 'squid', 'inktvis', 'mussel', 'mossel']],
@@ -92,6 +92,18 @@ const MEAT_TERMS = [
   'pepperoni', 'prosciutto', 'pancetta', 'anchov', 'ansjovis', 'gelatin',
 ];
 
+/**
+ * Dutch "gehakt" is both minced meat ("500 g gehakt") and "chopped" ("gehakte
+ * ui", "peterselie, fijn gehakt"), so it cannot be a plain term: every Dutch
+ * recipe with chopped onion would be beef. It counts as meat only as the
+ * ingredient itself - an ingredient that starts with the bare word.
+ */
+const MINCE_INGREDIENT = /^(?:half om half |runder|varkens|kalfs)?gehakt(?![\p{L}\p{N}])/u;
+
+function hasMinceIngredient(recipe: Recipe): boolean {
+  return (recipe.ingredients || []).some(i => MINCE_INGREDIENT.test(normalize(i?.item || '').trim()));
+}
+
 const METHOD_TERMS: Array<[string, string[]]> = [
   ['Airfryer', ['airfryer', 'air fryer', 'heteluchtfriteuse']],
   ['BBQ / grill', ['bbq', 'barbecue', 'grill', 'grillen', 'braai', 'smoker']],
@@ -99,6 +111,10 @@ const METHOD_TERMS: Array<[string, string[]]> = [
   ['Slow cooker', ['slow cooker', 'crockpot', 'slowcooker', 'sous vide']],
   ['No cook', ['no-cook', 'no cook', 'geen oven', 'raw']],
 ];
+
+/** Words that start like a meat term but are not meat: a "vleestomaat" is a
+ *  tomato, not meat ("vlees"). They are blanked out before matching. */
+const FALSE_FRIENDS = /(^|[^\p{L}\p{N}])vleestoma(?:at|ten)(?![\p{L}\p{N}])/gu;
 
 function haystack(recipe: Recipe): string {
   const text = [
@@ -109,7 +125,7 @@ function haystack(recipe: Recipe): string {
     ...(recipe.ingredients || []).map(i => i?.item || ''),
   ]
     .join(' ');
-  return normalize(text);
+  return normalize(text).replace(FALSE_FRIENDS, '$1 ');
 }
 
 /**
@@ -134,6 +150,7 @@ function proteinLabel(recipe: Recipe): string | null {
   const text = haystack(recipe);
   const protein = matchFirst(text, PROTEIN_TERMS);
   if (protein) return protein;
+  if (hasMinceIngredient(recipe)) return 'Beef';
   // Only claim "Vegetarian" when there is something to go on: an empty
   // ingredient list is unknown, not meat-free.
   if ((recipe.ingredients || []).length > 0 && !MEAT_TERMS.some(t => startsWord(text, t))) {

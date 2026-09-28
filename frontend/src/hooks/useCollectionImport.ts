@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Recipe } from '../types';
 import { apiPost, ApiError } from '../lib/api';
-import { getStrings } from '../lib/i18n';
+import { getLang, getStrings } from '../lib/i18n';
 import {
   saveRecipeToCloud,
   recipeExistsInCloud,
@@ -191,7 +191,11 @@ export function useCollectionImport() {
               break;
             }
 
-            const recipe = await apiPost<Recipe>('/extract-recipe', { url: video.url }, controller.signal);
+            const recipe = await apiPost<Recipe>(
+              '/extract-recipe',
+              { url: video.url, language: getLang() },
+              controller.signal,
+            );
             recipe.source_url = recipe.source_url || video.url;
             recipe.video_id = recipe.video_id || video.video_id || videoIdFromUrl(video.url) || undefined;
 
