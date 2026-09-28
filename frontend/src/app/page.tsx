@@ -41,6 +41,7 @@ import {
 import { apiPost } from '../lib/api';
 import {
   saveRecipeToCloud,
+  updateRecipeInCloud,
   recipeKey,
   isSameRecipe,
   ingredientQuantity,
@@ -58,6 +59,13 @@ import { getStrings, labelText, useLang } from '../lib/i18n';
 import { matchesQuery, searchableText } from '../lib/search';
 import { localizeError } from '../lib/errors';
 import { isSortOrder, sortRecipes, SortOrder } from '../lib/sort';
+import { parseServings, scaleRecipe } from '../lib/scale';
+import {
+  addEntry, EMPTY_LIST, loadShoppingList, removeEntry, saveShoppingList, ShoppingList, toggleChecked,
+} from '../lib/shopping';
+import ServingsStepper from '../components/ServingsStepper';
+import RecipeEditor from '../components/RecipeEditor';
+import ShoppingListView from '../components/ShoppingListView';
 
 interface User {
   id: string;
@@ -611,10 +619,80 @@ function HomeContent() {
     }
   };
 
+  // --- Portions: target servings, or a multiplier when the recipe has no count.
+  const baseServings = recipe ? parseServings(recipe.servings) : null;
+  const [servingsTarget, setServingsTarget] = useState(1);
+  const currentRecipeKey = recipe ? recipeKey(recipe) : '';
+  React.useEffect(() => {
+    setServingsTarget(baseServings ?? 1);
+    setEditing(false);
+    // Reset per recipe, not when the servings text is edited.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentRecipeKey]);
+  const scaleFactor = baseServings ? servingsTarget / baseServings : servingsTarget;
+  const displayRecipe = React.useMemo(
+    () => (recipe && scaleFactor !== 1 ? scaleRecipe(recipe, scaleFactor, lang) : recipe),
+    [recipe, scaleFactor, lang],
+  );
+
+  // --- Editing a recipe in place.
+  const [editing, setEditing] = useState(false);
+  const handleSaveEdit = async (updated: Recipe) => {
+    const original = recipe;
+    if (!original) return;
+    setRecipe(updated);
+    setServingsTarget(parseServings(updated.servings) ?? 1);
+    setEditing(false);
+    const inCookbook = savedRecipes.some(r => isSameRecipe(r, original));
+    if (!inCookbook) return; // Not saved yet: the edit rides along when it is.
+
+    const replace = (list: Recipe[], next: Recipe) => list.map(r => (isSameRecipe(r, original) ? next : r));
+    const optimistic = replace(savedRecipes, updated);
+    setSavedRecipes(optimistic);
+    if (!user) {
+      localStorage.setItem('chefSocial_cookbook', JSON.stringify(optimistic));
+      return;
+    }
+    try {
+      const stored = await updateRecipeInCloud(user.id, updated);
+      setSavedRecipes(prev => {
+        const next = replace(prev, stored);
+        localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(next));
+        return next;
+      });
+    } catch (e) {
+      console.error('Recipe update failed', e);
+      setSavedRecipes(prev => replace(prev, original));
+      setRecipe(current => (current && isSameRecipe(current, updated) ? original : current));
+      setCookbookError(getStrings().errEditFailed(original.title || getStrings().recipeFallback));
+    }
+  };
+
+  // --- Shopping list, kept on this device.
+  const [shoppingList, setShoppingList] = useState<ShoppingList>(EMPTY_LIST);
+  const shoppingLoaded = React.useRef(false);
+  React.useEffect(() => {
+    setShoppingList(loadShoppingList());
+    shoppingLoaded.current = true;
+  }, []);
+  React.useEffect(() => {
+    if (shoppingLoaded.current) saveShoppingList(shoppingList);
+  }, [shoppingList]);
+  const addToShopping = (recipes: Recipe[], factor = 1) => {
+    setShoppingList(prev => recipes.reduce((list, r) => addEntry(list, {
+      key: recipeKey(r),
+      title: r.title || getStrings().recipeFallback,
+      factor,
+      ingredients: r.ingredients || [],
+    }), prev));
+  };
+  const shoppingEntry = recipe ? shoppingList.entries.find(e => e.key === currentRecipeKey) : undefined;
+  const onShoppingList = !!shoppingEntry && Math.abs(shoppingEntry.factor - scaleFactor) < 1e-9;
+
   // Renders a clean printable document in a hidden iframe instead of
   // window.print() on the live page, which produced broken/blank output.
   const handlePrint = () => {
-    if (recipe) exportRecipesToPdf([recipe], { lang });
+    if (displayRecipe) exportRecipesToPdf([displayRecipe], { lang });
   };
 
   const handleExportPdf = (recipesToExport: Recipe[], cookbook: boolean) => {
@@ -696,7 +774,7 @@ function HomeContent() {
   };
 
   // --- VIEW STATE ---
-  const [view, setView] = useState<'home' | 'cookbook' | 'details' | 'suggest'>('home');
+  const [view, setView] = useState<'home' | 'cookbook' | 'details' | 'suggest' | 'shopping'>('home');
 
   // --- "What am I feeling like?" ---
   const [selectedMoods, setSelectedMoods] = useState<Set<string>>(new Set());
@@ -1024,8 +1102,8 @@ function HomeContent() {
               onClick={() => setView('cookbook')}
               className={styles.button}
               style={{
-                background: view === 'cookbook' ? 'var(--primary-gradient)' : 'rgba(255,255,255,0.1)',
-                opacity: view === 'cookbook' ? 1 : 0.7
+                background: view === 'cookbook' || view === 'shopping' ? 'var(--primary-gradient)' : 'rgba(255,255,255,0.1)',
+                opacity: view === 'cookbook' || view === 'shopping' ? 1 : 0.7
               }}
             >
               {t.cookbookNav}
@@ -1280,15 +1358,22 @@ function HomeContent() {
 
               {recipe && (
                 <div className={styles.recipeCard}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-                    <h2 className={styles.recipeTitle}>{recipe.title}</h2>
-                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '0.5rem' }}>
+                    <h2 className={styles.recipeTitle} style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{recipe.title}</h2>
+                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end', flexShrink: 0, maxWidth: '60%' }}>
+                      {!editing && (
+                        <button onClick={() => setEditing(true)} className={styles.iconButton} title={t.editRecipe} aria-label={t.editRecipe}>✏️</button>
+                      )}
                       <button onClick={handlePrint} className={styles.iconButton} title={t.saveAsPdf}>🖨️</button>
                       <button onClick={() => recipe && handleShare([recipe])} disabled={shareLoading} className={styles.iconButton} title={t.shareRecipe}>🔗</button>
                       <button onClick={handleDelete} className={styles.iconButton} title={t.deleteRecipe} style={{ color: '#ff6b6b' }}>🗑️</button>
                       <button onClick={() => { setRecipe(null); if (view === 'details') { setView('cookbook'); setTimeout(() => window.scrollTo({ top: cookbookScrollY.current, behavior: 'smooth' }), 50); } }} className={styles.iconButton} style={{ opacity: 0.6 }}>×</button>
                     </div>
                   </div>
+                  {editing ? (
+                    <RecipeEditor recipe={recipe} onSave={handleSaveEdit} onCancel={() => setEditing(false)} />
+                  ) : (
+                  <>
                   <p className={styles.recipeDesc}>{recipe.description}</p>
 
                   {/* Tags */}
@@ -1303,19 +1388,31 @@ function HomeContent() {
                   <div className={styles.metaGrid}>
                     <div className={styles.metaItem}>⏱ {recipe.prep_time || '--'}</div>
                     <div className={styles.metaItem}>🔥 {recipe.cook_time || '--'}</div>
-                    <div className={styles.metaItem}>👥 {recipe.servings || '--'}</div>
+                    <div className={styles.metaItem}>👥 {displayRecipe?.servings || '--'}</div>
+                  </div>
+
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center', justifyContent: 'space-between', margin: '0 0 1rem' }}>
+                    <ServingsStepper base={baseServings} value={servingsTarget} onChange={setServingsTarget} />
+                    <button
+                      type="button"
+                      className={styles.iconButton}
+                      style={{ width: 'auto', padding: '0 0.9rem', fontSize: '0.9rem' }}
+                      onClick={() => (onShoppingList ? setView('shopping') : addToShopping([recipe], scaleFactor))}
+                    >
+                      {onShoppingList ? t.onShoppingList : t.addToShopping}
+                    </button>
                   </div>
 
                   <div className={styles.splitSection}>
                     <div className={styles.ingredients}>
                       <h3>{t.ingredients}</h3>
                       {Object.entries(
-                        recipe.ingredients.reduce((acc, ing) => {
+                        (displayRecipe ?? recipe).ingredients.reduce((acc, ing) => {
                           const group = ing.group || 'Main';
                           if (!acc[group]) acc[group] = [];
                           acc[group].push(ing);
                           return acc;
-                        }, {} as Record<string, typeof recipe.ingredients>)
+                        }, {} as Record<string, Recipe['ingredients']>)
                       ).map(([group, items]) => (
                         <div key={group} style={{ marginBottom: '1rem' }}>
                           <h4 style={{ margin: '0.5rem 0', color: '#FF8E53', fontSize: '0.95rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
@@ -1344,6 +1441,8 @@ function HomeContent() {
                   <button onClick={() => saveRecipe(recipe)} disabled={savedRecipes.some(r => isSameRecipe(r, recipe))} className={styles.saveButton}>
                     {savedRecipes.some(r => isSameRecipe(r, recipe)) ? t.savedToCookbook : t.saveToCookbook}
                   </button>
+                  </>
+                  )}
                 </div>
               )}
             </>
@@ -1485,6 +1584,16 @@ function HomeContent() {
           )}
 
           {/* VIEW: COOKBOOK */}
+          {view === 'shopping' && (
+            <ShoppingListView
+              list={shoppingList}
+              onToggle={key => setShoppingList(prev => toggleChecked(prev, key))}
+              onRemoveRecipe={key => setShoppingList(prev => removeEntry(prev, key))}
+              onUncheckAll={() => setShoppingList(prev => ({ ...prev, checked: [] }))}
+              onClear={() => setShoppingList(EMPTY_LIST)}
+            />
+          )}
+
           {view === 'cookbook' && (
             <div className={styles.cookbookSection}>
               <div className={styles.cookbookHeader}>
@@ -1524,6 +1633,11 @@ function HomeContent() {
                     <option value="za">{t.sortZa}</option>
                     <option value="quickest">{t.sortQuickest}</option>
                   </select>
+                  {shoppingList.entries.length > 0 && (
+                    <button onClick={() => setView('shopping')} className={`${styles.button} ${styles.toolButton}`}>
+                      {t.shoppingButton(shoppingList.entries.length)}
+                    </button>
+                  )}
                   <button
                     onClick={() => { setSelectMode(p => !p); setBulkSelected(new Set()); anchorRef.current = null; }}
                     className={`${styles.button} ${styles.toolButton}`}
@@ -1576,6 +1690,18 @@ function HomeContent() {
                       title={t.cookbookPdfTitle}
                     >
                       📖 {t.cookbook}<span className={styles.bulkLabel}> PDF</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        addToShopping(savedRecipes.filter(r => bulkSelected.has(recipeKey(r))));
+                        setSelectMode(false); setBulkSelected(new Set());
+                        setView('shopping'); window.scrollTo({ top: 0, behavior: 'smooth' });
+                      }}
+                      className={`${styles.button} ${styles.bulkButton}`}
+                      disabled={bulkSelected.size === 0}
+                      title={t.addToShopping.replace(/^🛒\s*/, '')}
+                    >
+                      🛒<span className={styles.bulkLabel}> {t.shoppingShort}</span>
                     </button>
                     <button
                       onClick={() => {

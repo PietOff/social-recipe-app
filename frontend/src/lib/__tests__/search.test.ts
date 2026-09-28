@@ -38,6 +38,12 @@ describe('matchesQuery', () => {
     expect(matchesQuery(pasta, 'gehakt')).toBe(false);
   });
 
+  it('finds minced meat but not chopped vegetables for "gehakt"', () => {
+    expect(matchesQuery(recipe('Soep', ['courgette', 'gehakte ui', 'peterselie, fijn gehakt']), 'gehakt')).toBe(false);
+    expect(matchesQuery(recipe('Lasagne', ['rundergehakt']), 'gehakt')).toBe(true);
+    expect(matchesQuery(recipe('Pasta', ['gehakt', 'tomaat']), 'gehakt')).toBe(true);
+  });
+
   it('ignores accents and case', () => {
     expect(matchesQuery(recipe('Crème brûlée', ['cream']), 'CREME brulee')).toBe(true);
   });
