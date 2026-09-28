@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { Recipe } from '../../../types';
 import { db, auth } from '../../../firebase';
 import { doc, getDoc } from 'firebase/firestore';
-import { saveRecipeToCloud, thumbnailSrc } from '../../../lib/recipes';
+import { ingredientQuantity, saveRecipeToCloud, thumbnailSrc } from '../../../lib/recipes';
 import { labelText, useLang } from '../../../lib/i18n';
 
 export default function SharePage({ params }: { params: Promise<{ token: string }> }) {
@@ -16,8 +16,11 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
   const [loading, setLoading] = useState(true);
   // 'not-found' is kept as a code so it is shown in the current language.
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState<Set<string>>(new Set());
-  const [saving, setSaving] = useState<string | null>(null);
+  // Tracked by position in the shared list, not by title: two shared recipes
+  // with the same title used to share one "Saved!" state, so saving one
+  // marked both and "Save all" skipped the second.
+  const [saved, setSaved] = useState<Set<number>>(new Set());
+  const [saving, setSaving] = useState<number | null>(null);
 
   useEffect(() => {
     getDoc(doc(db, 'shared_links', token))
@@ -32,7 +35,7 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
       .finally(() => setLoading(false));
   }, [token]);
 
-  const saveRecipe = async (recipe: Recipe) => {
+  const saveRecipe = async (recipe: Recipe, index: number) => {
     // Read the live auth state rather than a localStorage copy holding an
     // ID token that expired an hour after sign-in.
     const currentUser = auth.currentUser;
@@ -40,10 +43,11 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
       window.location.href = '/';
       return;
     }
-    setSaving(recipe.title);
+    setSaving(index);
     try {
-      await saveRecipeToCloud(currentUser.uid, recipe);
-      setSaved(prev => new Set([...prev, recipe.title]));
+      // The sharer's save time is theirs; for this cookbook it is new now.
+      await saveRecipeToCloud(currentUser.uid, { ...recipe, created_at: undefined });
+      setSaved(prev => new Set([...prev, index]));
     } catch (e) {
       console.error(e);
       alert(t.saveFailed);
@@ -53,8 +57,8 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
   };
 
   const saveAll = async () => {
-    for (const recipe of recipes) {
-      if (!saved.has(recipe.title)) await saveRecipe(recipe);
+    for (const [index, recipe] of recipes.entries()) {
+      if (!saved.has(index)) await saveRecipe(recipe, index);
     }
   };
 
@@ -108,11 +112,11 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
                 <h2 style={{ margin: 0, fontSize: '1.3rem' }}>{recipe.title}</h2>
                 <button
-                  onClick={() => saveRecipe(recipe)}
-                  disabled={saved.has(recipe.title) || saving === recipe.title}
-                  style={{ ...styles.saveBtn, ...(saved.has(recipe.title) ? styles.savedBtn : {}) }}
+                  onClick={() => saveRecipe(recipe, i)}
+                  disabled={saved.has(i) || saving === i}
+                  style={{ ...styles.saveBtn, ...(saved.has(i) ? styles.savedBtn : {}) }}
                 >
-                  {saved.has(recipe.title) ? t.saved : saving === recipe.title ? '...' : t.save}
+                  {saved.has(i) ? t.saved : saving === i ? '...' : t.save}
                 </button>
               </div>
 
@@ -135,7 +139,7 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
                   <h3 style={styles.sectionTitle}>{t.ingredients}</h3>
                   <ul style={styles.list}>
                     {recipe.ingredients.map((ing, j) => (
-                      <li key={j}><b>{ing.amount} {ing.unit}</b> {ing.item}</li>
+                      <li key={j}><b>{ingredientQuantity(ing)}</b> {ing.item}</li>
                     ))}
                   </ul>
                 </div>
@@ -170,7 +174,9 @@ const styles: Record<string, React.CSSProperties> = {
   meta: { display: 'flex', gap: '1rem', fontSize: '0.85rem', opacity: 0.7, margin: '0.25rem 0 0.75rem', flexWrap: 'wrap' },
   tags: { display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '1rem' },
   tag: { background: 'rgba(255,255,255,0.15)', padding: '3px 10px', borderRadius: '12px', fontSize: '0.78rem' },
-  split: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '0.5rem' },
+  // Side by side when there is room, stacked on a phone: two fixed columns
+  // squeezed ingredients and steps into ~150px each.
+  split: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem', marginTop: '0.5rem' },
   sectionTitle: { margin: '0 0 0.5rem', fontSize: '1rem', opacity: 0.9 },
   list: { paddingLeft: '1.2rem', margin: 0, lineHeight: 1.7, fontSize: '0.88rem' },
   saveBtn: { flexShrink: 0, padding: '0.4rem 1rem', borderRadius: '20px', border: 'none', background: 'linear-gradient(90deg, #FF6B35, #FF8E53)', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: '0.85rem' },

@@ -21,4 +21,6 @@ export interface Recipe {
     keywords?: string[];
     source_url?: string;
     video_id?: string;
+    /** Epoch ms of the first save; used to sort the cookbook. */
+    created_at?: number;
 }

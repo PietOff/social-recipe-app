@@ -151,6 +151,14 @@ const en = {
   loadingRecipes: 'Loading your recipes...',
   noMatch: 'No recipes match your filter.',
   noRecipesYet: 'No recipes saved yet. Extract one to get started!',
+  sortLabel: 'Sort',
+  sortNewest: 'Newest first',
+  sortOldest: 'Oldest first',
+  sortAz: 'Title A–Z',
+  sortZa: 'Title Z–A',
+  sortQuickest: 'Quickest first',
+  errDeleteFailed: (title: string) =>
+    `"${title}" could not be deleted from the cloud, so it is back in your cookbook. Check your connection and try again.`,
 
   // Share page
   loadingShared: 'Loading shared recipes...',
@@ -304,6 +312,14 @@ const nl: Strings = {
   loadingRecipes: 'Je recepten laden...',
   noMatch: 'Geen recepten gevonden die hierbij passen.',
   noRecipesYet: 'Nog geen recepten opgeslagen. Haal er een op om te beginnen!',
+  sortLabel: 'Sorteren',
+  sortNewest: 'Nieuwste eerst',
+  sortOldest: 'Oudste eerst',
+  sortAz: 'Titel A–Z',
+  sortZa: 'Titel Z–A',
+  sortQuickest: 'Snelste eerst',
+  errDeleteFailed: (title) =>
+    `"${title}" kon niet uit de cloud worden verwijderd en staat daarom weer in je kookboek. Controleer je verbinding en probeer het opnieuw.`,
 
   loadingShared: 'Gedeelde recepten laden...',
   linkNotFound: 'Link niet gevonden',

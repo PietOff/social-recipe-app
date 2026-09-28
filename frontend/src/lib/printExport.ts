@@ -1,5 +1,6 @@
 import { Recipe, Ingredient } from '../types';
 import { getLang, labelText, Lang, STRINGS, Strings } from './i18n';
+import { ingredientQuantity } from './recipes';
 
 /**
  * PDF / print export.
@@ -79,11 +80,7 @@ let t: Strings = STRINGS.en;
 let lang: Lang = 'en';
 
 function ingredientLine(ing: Ingredient): string {
-    let amount = ing.amount || '';
-    let unit = ing.unit || '';
-    // "400g" + unit "g" would render as "400g g"
-    if (unit && amount.toLowerCase().endsWith(unit.toLowerCase())) unit = '';
-    const qty = [amount, unit].filter(Boolean).join(' ');
+    const qty = ingredientQuantity(ing);
     const item = ing.item || '';
     return `<li>${qty ? `<b>${escapeHtml(qty)}</b> ` : ''}${escapeHtml(item)}</li>`;
 }
