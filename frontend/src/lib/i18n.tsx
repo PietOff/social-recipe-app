@@ -151,6 +151,46 @@ const en = {
   loadingRecipes: 'Loading your recipes...',
   noMatch: 'No recipes match your filter.',
   noRecipesYet: 'No recipes saved yet. Extract one to get started!',
+  // Servings
+  servings: 'Servings',
+  servingsCount: (n: string) => `${n} ${n === '1' ? 'serving' : 'servings'}`,
+  scaleAmount: (n: string) => `Amount ×${n}`,
+  fewer: 'Fewer',
+  more: 'More',
+  resetScale: 'Original',
+  // Editing
+  editRecipe: 'Edit recipe',
+  fieldTitle: 'Title',
+  fieldDescription: 'Description',
+  fieldPrep: 'Prep time',
+  fieldCook: 'Cooking time',
+  fieldServings: 'Servings',
+  fieldTags: 'Tags (comma-separated)',
+  fieldAmount: 'Amount',
+  fieldUnit: 'Unit',
+  fieldItem: 'Ingredient',
+  addIngredient: '+ Add ingredient',
+  removeIngredient: 'Remove ingredient',
+  fieldSteps: 'Steps (one per line)',
+  saveChanges: 'Save changes',
+  savingChanges: 'Saving...',
+  errTitleRequired: 'Give the recipe a title.',
+  errEditFailed: (title: string) =>
+    `Changes to "${title}" could not be saved to the cloud. Check your connection and try again.`,
+  // Shopping list
+  shoppingList: 'Shopping list',
+  shoppingButton: (n: number) => `🛒 Shopping list${n ? ` (${n})` : ''}`,
+  addToShopping: '🛒 Add to shopping list',
+  onShoppingList: '✓ On your shopping list',
+  shoppingShort: 'Shopping',
+  shoppingEmpty: 'Your shopping list is empty. Add a recipe from its page, or select several in your cookbook.',
+  shoppingFrom: (n: number) => `From ${n} ${plural(n, 'recipe', 'recipes')}`,
+  removeFromList: 'Remove',
+  uncheckAll: 'Uncheck all',
+  clearList: 'Clear list',
+  confirmClearList: 'Remove everything from your shopping list?',
+  copyList: 'Copy list',
+  listCopied: 'Copied!',
   sortLabel: 'Sort',
   sortNewest: 'Newest first',
   sortOldest: 'Oldest first',
@@ -312,6 +352,43 @@ const nl: Strings = {
   loadingRecipes: 'Je recepten laden...',
   noMatch: 'Geen recepten gevonden die hierbij passen.',
   noRecipesYet: 'Nog geen recepten opgeslagen. Haal er een op om te beginnen!',
+  servings: 'Porties',
+  servingsCount: (n) => `${n} ${n === '1' ? 'persoon' : 'personen'}`,
+  scaleAmount: (n) => `Hoeveelheid ×${n}`,
+  fewer: 'Minder',
+  more: 'Meer',
+  resetScale: 'Origineel',
+  editRecipe: 'Recept bewerken',
+  fieldTitle: 'Titel',
+  fieldDescription: 'Beschrijving',
+  fieldPrep: 'Voorbereidingstijd',
+  fieldCook: 'Bereidingstijd',
+  fieldServings: 'Porties',
+  fieldTags: 'Labels (gescheiden door komma’s)',
+  fieldAmount: 'Hoeveelheid',
+  fieldUnit: 'Eenheid',
+  fieldItem: 'Ingrediënt',
+  addIngredient: '+ Ingrediënt toevoegen',
+  removeIngredient: 'Ingrediënt verwijderen',
+  fieldSteps: 'Stappen (één per regel)',
+  saveChanges: 'Wijzigingen opslaan',
+  savingChanges: 'Opslaan...',
+  errTitleRequired: 'Geef het recept een titel.',
+  errEditFailed: (title) =>
+    `De wijzigingen aan "${title}" konden niet in de cloud worden opgeslagen. Controleer je verbinding en probeer het opnieuw.`,
+  shoppingList: 'Boodschappenlijst',
+  shoppingButton: (n) => `🛒 Boodschappenlijst${n ? ` (${n})` : ''}`,
+  addToShopping: '🛒 Op boodschappenlijst',
+  onShoppingList: '✓ Op je boodschappenlijst',
+  shoppingShort: 'Boodschappen',
+  shoppingEmpty: 'Je boodschappenlijst is leeg. Voeg een recept toe vanaf de receptpagina, of selecteer er een paar in je kookboek.',
+  shoppingFrom: (n) => `Uit ${n} ${plural(n, 'recept', 'recepten')}`,
+  removeFromList: 'Weghalen',
+  uncheckAll: 'Alles uitvinken',
+  clearList: 'Lijst leegmaken',
+  confirmClearList: 'Alles van je boodschappenlijst halen?',
+  copyList: 'Lijst kopiëren',
+  listCopied: 'Gekopieerd!',
   sortLabel: 'Sorteren',
   sortNewest: 'Nieuwste eerst',
   sortOldest: 'Oudste eerst',
@@ -428,6 +505,23 @@ const LABELS_NL: Record<string, string> = {
 export function labelText(value: string, lang: Lang): string {
   if (lang === 'en') return value;
   return LABELS_NL[labelKey(value)] ?? value;
+}
+
+/**
+ * The stored (English) value for a label typed in `lang`: "Ontbijt" ->
+ * "Breakfast". Labels are stored in English so filters and PDF chapters keep
+ * one spelling; text that is not a known label is kept as typed.
+ */
+export function labelValueFromText(text: string, lang: Lang): string {
+  const typed = text.trim();
+  if (lang === 'en' || !typed) return typed;
+  const key = labelKey(typed);
+  for (const [english, dutch] of Object.entries(LABELS_NL)) {
+    if (labelKey(dutch) === key) {
+      return english.replace(/(^|[\s/-])\p{L}/gu, m => m.toUpperCase());
+    }
+  }
+  return typed;
 }
 
 /** Every spelling of a label, for search: the stored value plus its Dutch name. */

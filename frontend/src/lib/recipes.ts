@@ -125,6 +125,18 @@ export async function saveRecipeToCloud(uid: string, recipe: Recipe): Promise<Re
   return { ...recipe, id, created_at: data.created_at };
 }
 
+/**
+ * Saves an edited recipe over its existing document. saveRecipeToCloud would
+ * derive the id again - from the title, for a recipe without a video id or
+ * link - so renaming such a recipe would have created a copy.
+ */
+export async function updateRecipeInCloud(uid: string, recipe: Recipe): Promise<Recipe> {
+  if (!recipe.id) return saveRecipeToCloud(uid, recipe);
+  const data = toFirestoreDoc(uid, recipe);
+  await setDoc(doc(db, 'recipes', recipe.id), data);
+  return { ...recipe, created_at: data.created_at };
+}
+
 export async function recipeExistsInCloud(uid: string, recipe: Partial<Recipe>): Promise<boolean> {
   const id = await recipeDocId(uid, recipe);
   return (await getDoc(doc(db, 'recipes', id))).exists();

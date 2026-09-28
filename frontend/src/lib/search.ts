@@ -155,6 +155,13 @@ export function expandTerm(word: string): string[] {
 
 /** Everything a search looks at for one recipe, normalised. Labels are
  *  included in both languages so a Dutch chip name finds its recipes. */
+/**
+ * "gehakt" is minced meat, but "gehakte ui" and "fijn gehakt" mean chopped.
+ * Blanking the "chopped" forms keeps a search for gehakt from returning every
+ * Dutch recipe with chopped onion, while "rundergehakt" still matches.
+ */
+const CHOPPED = /(^|[^\p{L}\p{N}])(?:fijn ?gehakte?|grof ?gehakte?|gehakte)(?![\p{L}\p{N}])/gu;
+
 export function searchableText(recipe: Recipe): string {
   return normalize([
     recipe.title,
@@ -162,7 +169,7 @@ export function searchableText(recipe: Recipe): string {
     ...labelValues(recipe).flatMap(labelSpellings),
     recipe.category || '',
     ...(recipe.ingredients || []).map(i => i?.item || ''),
-  ].join(' '));
+  ].join(' ')).replace(CHOPPED, '$1 ');
 }
 
 /** Splits a query into words, keeping letters with accents together. */
