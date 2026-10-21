@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Recipe, RecipeText } from '../../types';
-import { asEdited, localized, needsTranslation, recipeText, withTranslation } from '../translate';
+import { asEdited, localized, needsTranslation, recipeText, translationFits, withTranslation } from '../translate';
 
 const recipe: Recipe = {
   id: 'u_1',
@@ -67,5 +67,37 @@ describe('recipe translation', () => {
     expect(Object.keys(recipeText(recipe)).sort()).toEqual(
       ['cook_time', 'description', 'ingredients', 'instructions', 'prep_time', 'servings', 'title'],
     );
+  });
+
+  it('ignores a cached translation that merged ingredient groups', () => {
+    const grouped: Recipe = {
+      ...recipe,
+      ingredients: [
+        { item: 'flour', amount: '250', unit: 'g', group: 'Dough' },
+        { item: 'minced meat', amount: '500', unit: 'g', group: 'Filling' },
+      ],
+    };
+    const merged: RecipeText = { ...dutch, ingredients: [
+      { item: 'bloem', amount: '250', unit: 'g', group: 'Main' },
+      { item: 'gehakt', amount: '500', unit: 'g', group: 'Main' },
+    ] };
+    const good: RecipeText = { ...dutch, ingredients: [
+      { item: 'bloem', amount: '250', unit: 'g', group: 'Deeg' },
+      { item: 'gehakt', amount: '500', unit: 'g', group: 'Vulling' },
+    ] };
+    expect(translationFits(grouped, merged)).toBe(false);
+    expect(needsTranslation(withTranslation(grouped, 'nl', merged), 'nl')).toBe(true);
+    expect(localized(withTranslation(grouped, 'nl', merged), 'nl').ingredients[0].item).toBe('flour');
+
+    expect(translationFits(grouped, good)).toBe(true);
+    expect(needsTranslation(withTranslation(grouped, 'nl', good), 'nl')).toBe(false);
+    expect(localized(withTranslation(grouped, 'nl', good), 'nl').ingredients.map(i => i.group)).toEqual(['Deeg', 'Vulling']);
+  });
+
+  it('ignores a cached translation with a different number of ingredients', () => {
+    const short: RecipeText = { ...dutch, ingredients: [] };
+    expect(translationFits(recipe, short)).toBe(true);
+    const extra: RecipeText = { ...dutch, ingredients: [...dutch.ingredients, { item: 'zout' }] };
+    expect(translationFits(recipe, extra)).toBe(false);
   });
 });

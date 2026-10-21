@@ -1875,6 +1875,32 @@ MAX_TRANSLATE_CHARS = 20000
 TRANSLATED_TEXT_FIELDS = ("title", "description", "prep_time", "cook_time", "servings")
 
 
+def translated_group_names(orig_ings: list, new_ings: list) -> dict:
+    """Original group name -> translated name, keeping groups apart.
+
+    A translation is only used when it is a real name ("Main" is the app's
+    default group and is never translated, nor used as a translation) and no
+    other group already maps to it; otherwise the original name is kept.
+    """
+    names: dict = {}
+    for orig, new in zip(orig_ings, new_ings):
+        group = orig.get("group") or ""
+        if not group or group == "Main" or group in names:
+            continue
+        value = new.get("group")
+        value = value.strip() if isinstance(value, str) else ""
+        if value and value.lower() != "main":
+            names[group] = value
+    taken: dict = {}
+    for group, value in list(names.items()):
+        if value.lower() in taken:
+            names[group] = group
+            names[taken[value.lower()]] = taken[value.lower()]
+        else:
+            taken[value.lower()] = group
+    return names
+
+
 def merge_translation(original: dict, translated: dict) -> dict:
     """The translated text fields laid over the original's structure.
 
@@ -1891,18 +1917,26 @@ def merge_translation(original: dict, translated: dict) -> dict:
     new_ings = translated.get("ingredients") if isinstance(translated, dict) else None
     if not isinstance(new_ings, list) or len(new_ings) != len(orig_ings):
         new_ings = [{}] * len(orig_ings)
+    new_ings = [n if isinstance(n, dict) else {} for n in new_ings]
+
     ingredients = []
     for orig, new in zip(orig_ings, new_ings):
-        new = new if isinstance(new, dict) else {}
         merged = dict(orig)
-        for key in ("item", "unit", "group"):
+        for key in ("item", "unit"):
             value = new.get(key)
             if isinstance(value, str) and (value.strip() or not orig.get(key)):
                 merged[key] = value
-        # "Main" is the app's default group key and is never translated.
-        if (orig.get("group") or "") == "Main":
-            merged["group"] = "Main"
         ingredients.append(merged)
+
+    # Groups are renamed, never regrouped: one translated name per original
+    # group, applied to all its ingredients. Models sometimes put every
+    # ingredient back in "Main", which merged "Dough" and "Filling" into one
+    # list; the grouping now always comes from the original.
+    group_names = translated_group_names(orig_ings, new_ings)
+    for merged in ingredients:
+        group = merged.get("group") or ""
+        if group:
+            merged["group"] = group_names.get(group, group)
     out["ingredients"] = ingredients
 
     orig_steps = original.get("instructions") or []
