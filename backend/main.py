@@ -407,7 +407,35 @@ def canonicalize_source_url(url: str) -> str:
 TIKTOK_SCOPES = ("webapp.reflow.video.detail", "webapp.video-detail")
 
 
-def tiktok_page_extract(url: str) -> dict:
+_TIKTOK_UAS = (
+    ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+     "Mobile/15E148 Safari/604.1"),
+    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
+)
+TIKTOK_PAGE_ATTEMPTS = 3
+
+
+def _tiktok_item_from_html(html_text: str) -> dict:
+    """The video's itemStruct from the page's rehydration JSON, or {}."""
+    m = re.search(
+        r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>',
+        html_text, re.DOTALL)
+    if not m:
+        return {}
+    try:
+        scope = json.loads(m.group(1)).get("__DEFAULT_SCOPE__", {})
+    except ValueError:
+        return {}
+    for key in TIKTOK_SCOPES:
+        item = scope.get(key, {}).get("itemInfo", {}).get("itemStruct", {}) or {}
+        if item:
+            return item
+    return {}
+
+
+def tiktok_page_extract(url: str, session=None, sleep=time.sleep) -> dict:
     """Pulls caption, thumbnail and ASR subtitles out of the TikTok page JSON.
 
     yt-dlp is currently blocked by TikTok ("Video not available, status code 0"),
@@ -415,31 +443,40 @@ def tiktok_page_extract(url: str) -> dict:
     The page HTML is still served normally and embeds `subtitleInfos` - an
     auto-transcribed WebVTT of the spoken audio - so the narration can be read
     directly, with no video download and no Whisper call.
+
+    TikTok intermittently answers a server with an empty "TikTok - Make Your
+    Day" shell instead of the video page (roughly 1 in 4 requests in testing).
+    The shell does set session cookies, and a follow-up request carrying them
+    usually gets the real page, so this retries a few times on one session,
+    alternating mobile and desktop user agents.
     """
     out = {"desc": "", "thumbnail": "", "subtitles": ""}
-    try:
+    sess = session or requests.Session()
+    item = {}
+    headers = {}
+    for attempt in range(TIKTOK_PAGE_ATTEMPTS):
         headers = {
-            "User-Agent": ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                           "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
-                           "Mobile/15E148 Safari/604.1"),
+            "User-Agent": _TIKTOK_UAS[attempt % len(_TIKTOK_UAS)],
             "Accept-Language": "en-US,en;q=0.9",
         }
-        html_text = requests.get(url, headers=headers, timeout=15).text
-        m = re.search(
-            r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>',
-            html_text, re.DOTALL)
-        if not m:
-            return out
-        scope = json.loads(m.group(1)).get("__DEFAULT_SCOPE__", {})
+        try:
+            html_text = sess.get(url, headers=headers, timeout=15).text
+            item = _tiktok_item_from_html(html_text)
+        except Exception as e:
+            logger.warning(f"TikTok page fetch attempt {attempt + 1} failed: {e}")
+            item = {}
+        if item:
+            if attempt:
+                logger.info(f"TikTok page served on attempt {attempt + 1}")
+            break
+        if attempt + 1 < TIKTOK_PAGE_ATTEMPTS:
+            logger.info(f"TikTok served an empty page (attempt {attempt + 1}); retrying")
+            sleep(1.0 + attempt)
+    if not item:
+        logger.warning(f"TikTok page had no video data after {TIKTOK_PAGE_ATTEMPTS} attempts: {url}")
+        return out
 
-        item = {}
-        for key in TIKTOK_SCOPES:
-            item = scope.get(key, {}).get("itemInfo", {}).get("itemStruct", {}) or {}
-            if item:
-                break
-        if not item:
-            return out
-
+    try:
         out["desc"] = item.get("desc", "") or ""
         video = item.get("video", {}) or {}
         out["thumbnail"] = video.get("cover") or video.get("originCover") or ""
@@ -452,7 +489,7 @@ def tiktok_page_extract(url: str) -> dict:
             if not sub_url or not is_safe_media_url(sub_url):
                 continue
             try:
-                vtt = requests.get(sub_url, headers=headers, timeout=15)
+                vtt = sess.get(sub_url, headers=headers, timeout=15)
                 if vtt.status_code == 200 and vtt.text.strip():
                     out["subtitles"] = clean_vtt(vtt.text)
                     logger.info(
@@ -464,6 +501,22 @@ def tiktok_page_extract(url: str) -> dict:
     except Exception as e:
         logger.warning(f"TikTok page extraction failed: {e}")
     return out
+
+
+def tiktok_oembed(url: str, sleep=time.sleep) -> dict:
+    """TikTok's public oEmbed: the full caption arrives as `title`. Retried once."""
+    for attempt in range(2):
+        try:
+            r = requests.get("https://www.tiktok.com/oembed", params={"url": url},
+                             headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+            if r.status_code == 200:
+                return r.json() or {}
+            logger.info(f"TikTok oEmbed HTTP {r.status_code} (attempt {attempt + 1})")
+        except Exception as e:
+            logger.warning(f"TikTok oEmbed failed (attempt {attempt + 1}): {e}")
+        if attempt == 0:
+            sleep(1.0)
+    return {}
 
 
 # Optional Instagram session cookies. Instagram increasingly serves a
@@ -725,17 +778,12 @@ def get_video_data(url: str, extract_audio: bool = False):
     tiktok_oembed_title = ""
     tiktok_oembed_thumbnail = ""
     if "tiktok.com" in url:
-        try:
-            oembed_r = requests.get(f"https://www.tiktok.com/oembed?url={url}", headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
-            if oembed_r.status_code == 200:
-                od = oembed_r.json()
-                tiktok_oembed_caption = od.get('title', '')
-                tiktok_oembed_title = tiktok_oembed_caption.split('\n')[0][:80]
-                tiktok_oembed_thumbnail = od.get('thumbnail_url', '')
-                if tiktok_oembed_caption:
-                    logger.info(f"TikTok oEmbed: {len(tiktok_oembed_caption)} chars: {tiktok_oembed_caption[:80]}")
-        except Exception as e_oe:
-            logger.warning(f"TikTok oEmbed failed: {e_oe}")
+        od = tiktok_oembed(url)
+        tiktok_oembed_caption = od.get('title', '') or ''
+        tiktok_oembed_title = tiktok_oembed_caption.split('\n')[0][:80]
+        tiktok_oembed_thumbnail = od.get('thumbnail_url', '') or ''
+        if tiktok_oembed_caption:
+            logger.info(f"TikTok oEmbed: {len(tiktok_oembed_caption)} chars: {tiktok_oembed_caption[:80]}")
     
     # TikTok primary path: caption + ASR subtitles from the page HTML.
     # yt-dlp is blocked by TikTok, so this is the only route to the narration.
@@ -1412,6 +1460,26 @@ def clean_vtt(vtt: str) -> str:
     return "\n".join(lines)
 
 
+TIKTOK_EMPTY_DETAIL = "TikTok did not return the video just now. Please try again in a moment."
+
+
+def _is_tiktok(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return host == "tiktok.com" or host.endswith(".tiktok.com")
+
+
+def tiktok_served_empty(raw_text: str) -> bool:
+    """True when all we got from TikTok was its placeholder page, not the video."""
+    text = (raw_text or "").strip()
+    if not text:
+        return True
+    if "Make Your Day" in text:
+        return True
+    # get_video_data's last-resort output when no caption or subtitles came back.
+    desc = re.search(r"Description:\s*(.*)", text, re.DOTALL)
+    return bool(text.startswith("Title: TikTok") and (not desc or len(desc.group(1).strip()) < 20))
+
+
 def is_thin_content(raw_text: str) -> bool:
     """Returns True if the extracted text is too sparse to reliably parse a recipe from."""
     return (
@@ -1892,6 +1960,11 @@ def extract_recipe(request: ExtractRequest, _rl: None = Depends(rate_limit)):
 
     if not recipe_has_content(recipe_data):
         logger.info(f"No recipe could be extracted from {safe_url} after all stages")
+        if _is_tiktok(safe_url) and tiktok_served_empty(raw_text):
+            # TikTok gave us its empty shell on every route, so we never saw
+            # the video at all. Saying "no recipe" would be wrong and would
+            # tempt the user to save an empty card; this is worth a retry.
+            raise HTTPException(status_code=503, detail=TIKTOK_EMPTY_DETAIL)
     return finalize(recipe_data, thumbnail_url, "vision/final")
 
 

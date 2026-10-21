@@ -38,7 +38,8 @@ import {
   where,
   setDoc
 } from 'firebase/firestore';
-import { apiPost } from '../lib/api';
+import { apiPost, ApiError } from '../lib/api';
+import { sharedLinkFromSearch, withoutShareParams } from '../lib/share';
 import { useBackendStatus, wakeBackend } from '../lib/warmup';
 import {
   saveRecipeToCloud,
@@ -465,8 +466,20 @@ function HomeContent() {
   // The recipe is written in the UI language. Tags stay English either way
   // (see parse_with_llm), so filters and labels keep working across a
   // cookbook that mixes both.
-  const extractSingleRecipe = async (videoUrl: string): Promise<Recipe> =>
-    apiPost<Recipe>('/extract-recipe', { url: videoUrl.trim(), language: lang });
+  const extractSingleRecipe = async (videoUrl: string): Promise<Recipe> => {
+    const request = () => apiPost<Recipe>('/extract-recipe', { url: videoUrl.trim(), language: lang });
+    try {
+      return await request();
+    } catch (e) {
+      // TikTok intermittently hands the server an empty page, and a waking
+      // backend can drop the first request; one quiet retry fixes most of it.
+      if (e instanceof ApiError && e.retryable && !e.dailyQuotaExhausted) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return request();
+      }
+      throw e;
+    }
+  };
 
   /** Merges a recipe saved by the background import into local state + cache. */
   const mergeImportedRecipe = React.useCallback((saved: Recipe) => {
@@ -508,9 +521,13 @@ function HomeContent() {
 
   const handleExtract = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!url) return;
+    await extractLink(url);
+  };
 
-    if (!isSupportedRecipeUrl(url)) {
+  const extractLink = async (link: string) => {
+    if (!link) return;
+
+    if (!isSupportedRecipeUrl(link)) {
       setError(t.errUnsupportedUrl);
       return;
     }
@@ -530,7 +547,7 @@ function HomeContent() {
       let collectionData: { is_collection?: boolean; count?: number; videos?: CollectionVideo[]; collection_title?: string } | null = null;
       try {
         // Only video platforms have collections; skip the round trip for websites.
-        if (isPlatformUrl(url)) collectionData = await apiPost('/extract-collection', { url: url.trim() });
+        if (isPlatformUrl(link)) collectionData = await apiPost('/extract-collection', { url: link.trim() });
       } catch {
         collectionData = null; // not a collection - fall through to single extraction
       }
@@ -585,7 +602,7 @@ function HomeContent() {
         }
       }
 
-      const data = await extractSingleRecipe(url);
+      const data = await extractSingleRecipe(link);
       setRecipe(data);
     } catch (err: any) {
       setError(err.message);
@@ -593,6 +610,23 @@ function HomeContent() {
       setLoading(false);
     }
   };
+
+  // A link shared into the app (iPhone Shortcut or Android share sheet)
+  // arrives as ?url= or ?text=. Show it in the field, start extracting, and
+  // clean the address so a reload doesn't extract it again.
+  const sharedLinkHandled = React.useRef(false);
+  React.useEffect(() => {
+    if (sharedLinkHandled.current) return;
+    sharedLinkHandled.current = true;
+    const link = sharedLinkFromSearch(window.location.search);
+    if (!link) return;
+    window.history.replaceState(null, '', withoutShareParams(window.location.pathname, window.location.search, window.location.hash));
+    setView('home');
+    setUrl(link);
+    void extractLink(link);
+    // Runs once on load; extractLink reads the first render's language, which is fine here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleDelete = async () => {
     if (!recipe) return;

@@ -29,6 +29,7 @@ const NL_ERRORS: Array<[RegExp, string | ((m: RegExpMatchArray) => string)]> = [
   [/^Could not read collection/i, 'De collectie kon niet worden gelezen.'],
   [/^No data returned for this URL/i, 'Er zijn geen gegevens gevonden voor deze link.'],
   [/^No videos found in this collection/i, "Geen video's gevonden in deze collectie. Controleer of de collectie openbaar is."],
+  [/^TikTok did not return the video/i, 'TikTok gaf de video nu niet door. Probeer het zo nog een keer.'],
   [/^Could not reach the server/i, 'De server is niet bereikbaar.'],
   [/^Request failed \((\d+)\)/i, m => `Verzoek mislukt (${m[1]}).`],
 ];
