@@ -7,6 +7,14 @@ describe('ingredientQuantity', () => {
     expect(ingredientQuantity({ amount: '400', unit: 'g' })).toBe('400 g');
   });
 
+  it('drops units that only mean "counted"', () => {
+    expect(ingredientQuantity({ amount: '1', unit: 'stuk' })).toBe('1');
+    expect(ingredientQuantity({ amount: '2', unit: 'Pieces' })).toBe('2');
+    expect(ingredientQuantity({ amount: '3', unit: 'stuks' })).toBe('3');
+    expect(ingredientQuantity({ amount: '4', unit: 'teentjes' })).toBe('4 teentjes');
+    expect(ingredientQuantity({ amount: '1', unit: 'el' })).toBe('1 el');
+  });
+
   it('handles missing parts', () => {
     expect(ingredientQuantity({ amount: '2' })).toBe('2');
     expect(ingredientQuantity({ unit: 'snufje' })).toBe('snufje');

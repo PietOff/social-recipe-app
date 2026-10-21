@@ -113,9 +113,20 @@ export function thumbnailSrc(recipe: Partial<Recipe>): string | undefined {
 
 /** "400 g" from amount + unit, without doubling a unit the amount already
  *  carries: the extractor often returns amount "400g" with unit "g". */
+/**
+ * "Units" that only say the thing is counted. "1 stuk ei" or "2 pieces onion"
+ * reads oddly; "1 ei" and "2 onion" say the same. The AI sometimes fills these
+ * in, and translation turns "piece" into "stuk", so they are dropped on display.
+ */
+const COUNT_UNITS = new Set([
+  'piece', 'pieces', 'pc', 'pcs', 'pc.', 'pcs.', 'item', 'items', 'unit', 'units', 'whole', 'x',
+  'stuk', 'stuks', 'st', 'st.', 'stk', 'stk.',
+]);
+
 export function ingredientQuantity(ing: Pick<Ingredient, 'amount' | 'unit'>): string {
   const amount = (ing.amount || '').trim();
   let unit = (ing.unit || '').trim();
+  if (COUNT_UNITS.has(unit.toLowerCase())) unit = '';
   if (unit && amount.toLowerCase().endsWith(unit.toLowerCase())) unit = '';
   return [amount, unit].filter(Boolean).join(' ');
 }
