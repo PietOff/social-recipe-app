@@ -1262,7 +1262,7 @@ def parse_with_llm(text_data: str, api_key: str, language: str = "en", source: s
         You are an expert chef and data parser. Extract a structured recipe from the text below, {intro}
 
         RULES:
-        1. METRIC units only for weight/volume (ml, l, g, kg). Keep natural counts for discrete items ("3 cloves garlic", "2 eggs"). Never convert countable items to grams.
+        1. METRIC units only for weight/volume (ml, l, g, kg). Keep natural counts for discrete items ("3 cloves garlic", "2 eggs"). Never convert countable items to grams. For a plain count leave "unit" empty: {{"item": "egg", "amount": "1", "unit": ""}}; never use "piece", "pcs" or "stuk" as a unit.
         2. If amounts are missing, use your culinary knowledge to estimate sensible metric amounts. Never leave amount blank if you can infer it.
         3. Group ingredients by component when relevant (e.g. "Sauce", "Marinade", "Batter"). Default group is "Main".
         4. Instructions: be detailed and sequential. Expand on implied steps. Aim for a complete cooking guide a beginner could follow.
@@ -1960,6 +1960,7 @@ def _translate_prompt(recipe: dict, language: str) -> str:
 RULES:
 1. Translate the wording only. Keep every amount and number exactly as given. Keep metric units.
 2. Keep exactly the same number of ingredients and instructions, in the same order. Never merge, split, add or drop lines.
+   An empty "unit" stays empty; never fill in "piece", "pcs" or "stuk".
 3. {units}
 4. Ingredient groups are short headings: translate them too, except "Main", which stays "Main".
 5. Return ONLY a JSON object with the same keys and structure as the input.
