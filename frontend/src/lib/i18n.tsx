@@ -58,11 +58,12 @@ const en = {
     `"${title}" saved on this device only - it could not reach the cloud, ` +
     'so it will not show up on your other devices yet.',
   recipeFallback: 'Recipe',
-  errUnsupportedUrl: 'Please paste a TikTok, Instagram or YouTube link.',
+  errUnsupportedUrl: 'Please paste a link (https://...) to a video or a recipe page.',
   errSignInToShare: 'Sign in to share recipes.',
   errShare: (msg: string) => `Failed to create share link: ${msg}`,
   errSuggest: 'Could not get a suggestion right now.',
   youtubeTip: '💡 Tip: Try using TikTok or Instagram links instead',
+  viewOriginal: 'View original',
   confirmDelete: 'Are you sure you want to delete this recipe?',
 
   // Share toast
@@ -70,7 +71,7 @@ const en = {
   copy: 'Copy',
 
   // Extract form
-  urlPlaceholder: 'Paste TikTok, Instagram or YouTube link...',
+  urlPlaceholder: 'Paste a TikTok, Instagram, YouTube or recipe website link...',
   clearLink: 'Clear the link',
   clear: 'Clear',
   extracting: 'Extracting...',
@@ -265,17 +266,18 @@ const nl: Strings = {
     `"${title}" is alleen op dit apparaat opgeslagen - de cloud was niet bereikbaar, ` +
     'dus het verschijnt nog niet op je andere apparaten.',
   recipeFallback: 'Recept',
-  errUnsupportedUrl: 'Plak een link van TikTok, Instagram of YouTube.',
+  errUnsupportedUrl: 'Plak een link (https://...) naar een video of een receptpagina.',
   errSignInToShare: 'Log in om recepten te delen.',
   errShare: (msg) => `Deellink maken mislukt: ${msg}`,
   errSuggest: 'Er kon nu geen suggestie worden opgehaald.',
   youtubeTip: '💡 Tip: probeer een link van TikTok of Instagram',
+  viewOriginal: 'Bekijk origineel',
   confirmDelete: 'Weet je zeker dat je dit recept wilt verwijderen?',
 
   copied: 'Gekopieerd!',
   copy: 'Kopiëren',
 
-  urlPlaceholder: 'Plak een link van TikTok, Instagram of YouTube...',
+  urlPlaceholder: 'Plak een link van TikTok, Instagram, YouTube of een receptensite...',
   clearLink: 'Link wissen',
   clear: 'Wissen',
   extracting: 'Bezig met ophalen...',

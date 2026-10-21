@@ -6,7 +6,13 @@ import { Lang } from './i18n';
  * e.g. ApiError.dailyQuotaExhausted - so they are translated only when shown.
  */
 const NL_ERRORS: Array<[RegExp, string | ((m: RegExpMatchArray) => string)]> = [
-  [/^Unsupported URL/i, 'Deze link wordt niet ondersteund. Alleen links van TikTok, Instagram en YouTube werken.'],
+  [/^Unsupported URL/i, 'Deze link wordt niet ondersteund. Plak een link van TikTok, Instagram of YouTube, of van een receptpagina.'],
+  [/^Could not open this website \(status (\d+)\)/i, m => `Deze website kon niet worden geopend (status ${m[1]}).`],
+  [/^Could not open this website/i, 'Deze website kon niet worden geopend. Controleer de link en probeer het opnieuw.'],
+  [/blocks automatic access/i, 'Deze website blokkeert automatisch ophalen. Probeer een andere receptensite.'],
+  [/^This link is not a web page/i, 'Deze link is geen webpagina met een recept.'],
+  [/redirects too many times/i, 'Deze link verwijst te vaak door.'],
+  [/^No recipe found on this page/i, 'Op deze pagina is geen recept gevonden.'],
   [/redirected to an unsupported destination/i, 'Deze link verwijst door naar een site die niet wordt ondersteund.'],
   [/^Sign-in required/i, 'Log in om dit te doen.'],
   [/Invalid or expired session/i, 'Je sessie is verlopen. Log opnieuw in.'],
