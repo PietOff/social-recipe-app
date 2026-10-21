@@ -39,6 +39,7 @@ import {
   setDoc
 } from 'firebase/firestore';
 import { apiPost } from '../lib/api';
+import { useBackendStatus, wakeBackend } from '../lib/warmup';
 import {
   saveRecipeToCloud,
   updateRecipeInCloud,
@@ -79,6 +80,8 @@ interface User {
 
 function HomeContent() {
   const { t, lang, setLang } = useLang();
+  // Starts waking the (free-plan, sleeping) backend as soon as the app opens.
+  const backendStatus = useBackendStatus();
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -519,6 +522,11 @@ function HomeContent() {
     setCollectionTitle(null);
 
     try {
+      // If the backend is still starting, wait for it instead of letting the
+      // request fail against a sleeping instance. A failed wake-up falls
+      // through so the real error from the request is shown.
+      await wakeBackend();
+
       let collectionData: { is_collection?: boolean; count?: number; videos?: CollectionVideo[]; collection_title?: string } | null = null;
       try {
         // Only video platforms have collections; skip the round trip for websites.
@@ -1178,9 +1186,15 @@ function HomeContent() {
                     )}
                   </div>
                   <button type="submit" disabled={loading} className={styles.button}>
-                    {loading ? t.extracting : t.getRecipe}
+                    {loading ? (backendStatus === 'waking' ? t.wakingServer : t.extracting) : t.getRecipe}
                   </button>
                 </form>
+              )}
+              {view === 'home' && !recipe && !collectionVideos && backendStatus === 'waking' && (
+                <p className={styles.serverHint} role="status">{t.serverWakingHint}</p>
+              )}
+              {view === 'home' && !recipe && !collectionVideos && backendStatus === 'down' && (
+                <p className={styles.serverHint} role="status">{t.serverDownHint}</p>
               )}
 
               {/* Collection detected UI */}

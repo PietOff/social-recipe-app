@@ -76,6 +76,9 @@ const en = {
   clear: 'Clear',
   extracting: 'Extracting...',
   getRecipe: 'Get Recipe',
+  wakingServer: 'Starting server...',
+  serverWakingHint: 'The server was asleep and is starting up. This can take up to a minute.',
+  serverDownHint: 'The server is not responding right now. You can still try, or come back in a moment.',
 
   // Collection import
   collection: 'Collection',
@@ -282,6 +285,9 @@ const nl: Strings = {
   clear: 'Wissen',
   extracting: 'Bezig met ophalen...',
   getRecipe: 'Recept ophalen',
+  wakingServer: 'Server opstarten...',
+  serverWakingHint: 'De server sliep en wordt nu opgestart. Dit kan tot een minuut duren.',
+  serverDownHint: 'De server reageert nu niet. Je kunt het toch proberen, of het zo nog eens doen.',
 
   collection: 'Collectie',
   checkingRecipes: 'Kijken welke video’s recepten zijn...',
