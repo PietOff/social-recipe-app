@@ -2,11 +2,33 @@ import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Ingredient, Recipe } from '../types';
 
+const PLATFORM_DOMAINS = ['tiktok.com', 'instagram.com', 'youtube.com', 'youtu.be'];
+
+/** TikTok, Instagram or YouTube. Any other web link is a recipe website. */
+export function isPlatformUrl(url: string): boolean {
+  try {
+    const host = new URL(url.trim()).hostname.toLowerCase().replace(/^www\./, '');
+    return PLATFORM_DOMAINS.some(d => host === d || host.endsWith('.' + d));
+  } catch {
+    return false;
+  }
+}
+
+/** Any http(s) link with a real host name; the backend checks the rest. */
+export function isWebUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url.trim());
+    return (parsed.protocol === 'https:' || parsed.protocol === 'http:') && parsed.hostname.includes('.');
+  } catch {
+    return false;
+  }
+}
+
 /** Pulls the platform video id out of a TikTok (numeric) or YouTube
  *  (11-char; watch?v=, youtu.be, /shorts/, /embed/) URL. Must stay in sync
  *  with the backend's `video_id_from_url` so doc ids match. */
 export function videoIdFromUrl(url?: string | null): string | null {
-  if (!url) return null;
+  if (!url || !isPlatformUrl(url)) return null;
   const tiktok = url.match(/\/video\/(\d+)/);
   if (tiktok) return tiktok[1];
   const youtube = url.match(/(?:[?&]v=|youtu\.be\/|\/shorts\/|\/embed\/)([A-Za-z0-9_-]{11})/);

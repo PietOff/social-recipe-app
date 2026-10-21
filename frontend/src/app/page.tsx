@@ -46,6 +46,8 @@ import {
   isSameRecipe,
   ingredientQuantity,
   videoIdFromUrl,
+  isPlatformUrl,
+  isWebUrl,
   thumbnailSrc,
   loadFailedImportIds,
   clearFailedImportIds,
@@ -120,19 +122,9 @@ function HomeContent() {
     return () => document.removeEventListener('mousedown', handler);
   }, [userMenuOpen]);
 
-  // Validate that a URL points to a supported recipe source before hitting the API.
+  // Videos from TikTok/Instagram/YouTube, or any recipe website.
   const isSupportedRecipeUrl = (raw: string): boolean => {
-    try {
-      const host = new URL(raw.trim()).hostname.replace(/^www\./, '').toLowerCase();
-      const supported = [
-        'tiktok.com', 'vm.tiktok.com',
-        'instagram.com',
-        'youtube.com', 'youtu.be', 'm.youtube.com',
-      ];
-      return supported.some(d => host === d || host.endsWith('.' + d));
-    } catch {
-      return false;
-    }
+    return isWebUrl(raw);
   };
 
   // Load saved recipes and user on mount
@@ -529,7 +521,8 @@ function HomeContent() {
     try {
       let collectionData: { is_collection?: boolean; count?: number; videos?: CollectionVideo[]; collection_title?: string } | null = null;
       try {
-        collectionData = await apiPost('/extract-collection', { url: url.trim() });
+        // Only video platforms have collections; skip the round trip for websites.
+        if (isPlatformUrl(url)) collectionData = await apiPost('/extract-collection', { url: url.trim() });
       } catch {
         collectionData = null; // not a collection - fall through to single extraction
       }
@@ -1140,7 +1133,7 @@ function HomeContent() {
             </div>
           )}
 
-          {error && <div className={styles.error}>{localizeError(error, lang)}{error.includes('YouTube') && <><br /><small style={{ opacity: 0.8 }}>{t.youtubeTip}</small></>}</div>}
+          {error && <div className={styles.error}>{localizeError(error, lang)}{/youtu\.?be/i.test(url) && <><br /><small style={{ opacity: 0.8 }}>{t.youtubeTip}</small></>}</div>}
 
           {shareLink && (
             <div className={styles.shareToast}>
@@ -1375,6 +1368,16 @@ function HomeContent() {
                   ) : (
                   <>
                   <p className={styles.recipeDesc}>{recipe.description}</p>
+                  {recipe.source_url && isWebUrl(recipe.source_url) && (
+                    <a
+                      href={recipe.source_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ display: 'inline-block', fontSize: '0.85rem', opacity: 0.7, color: 'inherit', marginBottom: '0.5rem' }}
+                    >
+                      ↗ {t.viewOriginal} ({new URL(recipe.source_url).hostname.replace(/^www\./, '')})
+                    </a>
+                  )}
 
                   {/* Tags */}
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', margin: '10px 0' }}>

@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "ChefSocial – Recipe Extractor",
-  description: "Convert TikTok, Instagram and YouTube cooking videos into structured recipes.",
+  description: "Convert TikTok, Instagram and YouTube cooking videos and recipe websites into structured recipes.",
 };
 
 export default function RootLayout({

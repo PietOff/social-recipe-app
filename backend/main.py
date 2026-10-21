@@ -32,6 +32,7 @@ import shutil
 import threading
 from collections import defaultdict, deque
 from fastapi import Depends, Header, Request
+import website
 
 # Load env vars
 load_dotenv()
@@ -94,6 +95,14 @@ def _is_private_host(host: str) -> bool:
         return False  # not a literal IP
 
 
+def is_platform_url(url: str) -> bool:
+    """TikTok, Instagram or YouTube, whatever the scheme. Everything else with a
+    web address is treated as a recipe website."""
+    host = _hostname((url or "").strip())
+    host = host[4:] if host.startswith("www.") else host
+    return any(host == d or host.endswith("." + d) for d in BASE_DOMAINS)
+
+
 def _host_allowed(url: str) -> bool:
     if not url.lower().startswith("https://"):
         return False
@@ -111,7 +120,7 @@ def assert_supported_url(url: str) -> str:
     if not _host_allowed(url):
         raise HTTPException(
             status_code=400,
-            detail="Unsupported URL. Only TikTok, Instagram and YouTube links are accepted.",
+            detail="Unsupported URL. Paste a TikTok, Instagram or YouTube link, or a link to a recipe page.",
         )
     resolved = resolve_redirects(url)
     if not _host_allowed(resolved):
@@ -251,7 +260,10 @@ def video_id_from_url(url: str) -> Optional[str]:
 
     Giving YouTube recipes a video id means the deterministic doc id keys on
     the video rather than the URL text, so youtu.be and youtube.com/watch
-    forms of the same video de-duplicate."""
+    forms of the same video de-duplicate. Only for platform links: a recipe
+    site with "/video/123" in a path is not a TikTok video."""
+    if not is_platform_url(url or ""):
+        return None
     m = TIKTOK_VIDEO_ID_RE.search(url or "")
     if m:
         return m.group(1)
@@ -1180,14 +1192,21 @@ def _language_rule(language: str) -> str:
     return "6. ALWAYS output everything in English, regardless of input language."
 
 
-def parse_with_llm(text_data: str, api_key: str, language: str = "en"):
+SOURCE_INTROS = {
+    "video": "which comes from a social media cooking video (TikTok/Instagram/YouTube). The text may include video titles, descriptions, captions, subtitles, and/or an audio transcript.",
+    "website": "which comes from a recipe web page. It is either the page's structured recipe data or its visible text; ignore navigation, adverts, comments and unrelated content.",
+}
+
+
+def parse_with_llm(text_data: str, api_key: str, language: str = "en", source: str = "video"):
     """
     Uses Google Gemini (1.5 Flash) to parse the raw text into a structured Recipe.
     """
     try:
         language_rule = _language_rule(language)
+        intro = SOURCE_INTROS.get(source, SOURCE_INTROS["video"])
         prompt = f"""
-        You are an expert chef and data parser. Extract a structured recipe from the text below, which comes from a social media cooking video (TikTok/Instagram/YouTube). The text may include video titles, descriptions, captions, subtitles, and/or an audio transcript.
+        You are an expert chef and data parser. Extract a structured recipe from the text below, {intro}
 
         RULES:
         1. METRIC units only for weight/volume (ml, l, g, kg). Keep natural counts for discrete items ("3 cloves garlic", "2 eggs"). Never convert countable items to grams.
@@ -1666,6 +1685,10 @@ def extract_collection(request: ExtractRequest, _rl: None = Depends(rate_limit))
     Extracts all video URLs from a TikTok collection or YouTube playlist URL.
     Returns list of individual video URLs to be processed one by one.
     """
+    if not is_platform_url(request.url):
+        # A recipe website is never a collection; answer before yt-dlp's
+        # generic extractor goes off and downloads the page.
+        return {'is_collection': False, 'count': 0, 'videos': []}
     resolved_url = assert_supported_url(request.url)
     logger.info(f"Extracting collection from: {resolved_url}")
 
@@ -1729,8 +1752,30 @@ def extract_collection(request: ExtractRequest, _rl: None = Depends(rate_limit))
     }
 
 
+def extract_website_recipe(url: str, language: str) -> dict:
+    """A recipe from an ordinary recipe website (see website.py)."""
+    if not (os.getenv("GEMINI_API_KEY") or os.getenv("GROQ_API_KEY")):
+        raise HTTPException(status_code=503, detail="No LLM provider configured on the server.")
+    try:
+        page = website.extract_website(url)
+    except website.WebsiteError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    source_url = website.canonicalize_web_url(page["final_url"])
+    recipe_data = parse_with_llm(page["raw_text"], "", language, source="website")
+    if not recipe_has_content(recipe_data):
+        logger.info(f"No recipe found on web page {source_url} (structured={page['structured']})")
+        raise HTTPException(status_code=422, detail="No recipe found on this page.")
+    recipe_data["video_id"] = None
+    recipe_data["source_url"] = source_url
+    recipe_data["image_url"] = page["image"] or None
+    logger.info(f"Extraction succeeded via website ({'json-ld' if page['structured'] else 'page text'}) for {source_url}")
+    return recipe_data
+
+
 @app.post("/extract-recipe")
 def extract_recipe(request: ExtractRequest, _rl: None = Depends(rate_limit)):
+    if not is_platform_url(request.url) and website.is_web_url(request.url):
+        return extract_website_recipe(request.url.strip(), request.language)
     # Validate the URL before anything else, so a bad link reports a bad link.
     safe_url = canonicalize_source_url(assert_supported_url(request.url))
 
