@@ -76,6 +76,8 @@ const en = {
   clear: 'Clear',
   extracting: 'Extracting...',
   getRecipe: 'Get Recipe',
+  translating: 'Translating recipe...',
+  translateFailed: 'Could not translate this recipe right now; showing the original.',
   wakingServer: 'Starting server...',
   serverWakingHint: 'The server was asleep and is starting up. This can take up to a minute.',
   serverDownHint: 'The server is not responding right now. You can still try, or come back in a moment.',
@@ -285,6 +287,8 @@ const nl: Strings = {
   clear: 'Wissen',
   extracting: 'Bezig met ophalen...',
   getRecipe: 'Recept ophalen',
+  translating: 'Recept vertalen...',
+  translateFailed: 'Dit recept kon nu niet worden vertaald; je ziet het origineel.',
   wakingServer: 'Server opstarten...',
   serverWakingHint: 'De server sliep en wordt nu opgestart. Dit kan tot een minuut duren.',
   serverDownHint: 'De server reageert nu niet. Je kunt het toch proberen, of het zo nog eens doen.',
@@ -552,6 +556,12 @@ export function getLang(): Lang {
 
 export function getStrings(): Strings {
   return STRINGS[currentLang];
+}
+
+/** The stored or browser language, readable before the provider has applied
+ *  it (it starts as English to match the server render). */
+export function preferredLang(): Lang {
+  return detectLang();
 }
 
 function detectLang(): Lang {
