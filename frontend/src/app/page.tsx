@@ -601,7 +601,10 @@ function HomeContent() {
           // Fresh read: an import may have recorded new failures since mount.
           const failedNow = loadFailedImportIds();
           setFailedVideoIds(failedNow);
-          const withoutFailed = (ids: Set<string>) => new Set([...ids].filter(k => !failedNow.has(k)));
+          // Already in the cookbook or failed before: shown greyed out, so never
+          // pre-selected (they would only inflate the "selected" count).
+          const withoutFailed = (ids: Set<string>) =>
+            new Set([...ids].filter(k => !failedNow.has(k) && !importedVideoIds.has(k)));
           const selectAll = () => withoutFailed(new Set(videos.map(v => v.video_id ?? v.url)));
           try {
             // Chunked: asking one LLM call to emit hundreds of JSON objects
