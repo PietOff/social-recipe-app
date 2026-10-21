@@ -65,6 +65,54 @@ class MergeTranslationTest(unittest.TestCase):
         self.assertEqual(out["instructions"], ORIGINAL["instructions"])
 
 
+GROUPED = {
+    "title": "Brabant Sausage Rolls",
+    "ingredients": [
+        {"item": "flour", "amount": "250", "unit": "g", "group": "Dough"},
+        {"item": "milk", "amount": "125", "unit": "ml", "group": "Dough"},
+        {"item": "minced meat", "amount": "500", "unit": "g", "group": "Filling"},
+        {"item": "egg", "amount": "1", "unit": "", "group": "Filling"},
+    ],
+    "instructions": ["Make the dough.", "Fill and bake."],
+}
+
+
+class GroupPreservationTest(unittest.TestCase):
+    def groups(self, out):
+        return [i["group"] for i in out["ingredients"]]
+
+    def test_translates_group_names(self):
+        nl = {**GROUPED, "ingredients": [
+            {"item": "bloem", "group": "Deeg"}, {"item": "melk", "group": "Deeg"},
+            {"item": "gehakt", "group": "Vulling"}, {"item": "ei", "group": "Vulling"}]}
+        self.assertEqual(self.groups(main.merge_translation(GROUPED, nl)), ["Deeg", "Deeg", "Vulling", "Vulling"])
+
+    def test_model_collapsing_everything_into_main_keeps_the_split(self):
+        collapsed = {**GROUPED, "ingredients": [
+            {"item": "bloem", "group": "Main"}, {"item": "melk", "group": "Main"},
+            {"item": "gehakt", "group": "Main"}, {"item": "ei", "group": "Main"}]}
+        out = main.merge_translation(GROUPED, collapsed)
+        self.assertEqual(self.groups(out), ["Dough", "Dough", "Filling", "Filling"])
+        self.assertEqual(out["ingredients"][0]["item"], "bloem")
+
+    def test_two_groups_translated_to_the_same_name_stay_apart(self):
+        clash = {**GROUPED, "ingredients": [
+            {"item": "bloem", "group": "Deeg"}, {"item": "melk", "group": "Deeg"},
+            {"item": "gehakt", "group": "Deeg"}, {"item": "ei", "group": "Deeg"}]}
+        self.assertEqual(self.groups(main.merge_translation(GROUPED, clash)), ["Dough", "Dough", "Filling", "Filling"])
+
+    def test_inconsistent_names_within_a_group_use_the_first(self):
+        mixed = {**GROUPED, "ingredients": [
+            {"item": "bloem", "group": "Deeg"}, {"item": "melk", "group": "Het deeg"},
+            {"item": "gehakt", "group": "Vulling"}, {"item": "ei", "group": "Vulling"}]}
+        self.assertEqual(self.groups(main.merge_translation(GROUPED, mixed)), ["Deeg", "Deeg", "Vulling", "Vulling"])
+
+    def test_ingredient_without_group_stays_without(self):
+        orig = {**GROUPED, "ingredients": [{"item": "salt", "amount": "1", "unit": "tsp"}]}
+        out = main.merge_translation(orig, {"ingredients": [{"item": "zout", "group": "Main"}]})
+        self.assertNotIn("group", out["ingredients"][0])
+
+
 class TranslateEndpointTest(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(main.app)

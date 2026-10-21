@@ -23,11 +23,34 @@ export function recipeText(r: Recipe): RecipeText {
   };
 }
 
+/**
+ * A cached translation is only usable when it has the original's shape: the
+ * same ingredients, split into the same groups. Translations saved before the
+ * backend fixed group handling could merge "Dough" and "Filling" into one
+ * list; those are ignored so the recipe is translated again.
+ */
+export function translationFits(r: Recipe, text: RecipeText | undefined): text is RecipeText {
+  if (!text) return false;
+  const orig = r.ingredients || [];
+  const next = text.ingredients || [];
+  if (next.length && next.length !== orig.length) return false;
+  if (!next.length) return true;
+  const key = (g: string | undefined) => g || 'Main';
+  for (let i = 0; i < orig.length; i++) {
+    for (let j = i + 1; j < orig.length; j++) {
+      const sameBefore = key(orig[i].group) === key(orig[j].group);
+      const sameAfter = key(next[i].group) === key(next[j].group);
+      if (sameBefore !== sameAfter) return false;
+    }
+  }
+  return true;
+}
+
 /** The recipe with its text in `lang` when that is known; otherwise unchanged. */
 export function localized(r: Recipe, lang: RecipeLang): Recipe {
   if (r.language === lang) return r;
   const text = r.translations?.[lang];
-  if (!text) return r;
+  if (!translationFits(r, text)) return r;
   return {
     ...r,
     title: text.title || r.title,
@@ -42,7 +65,7 @@ export function localized(r: Recipe, lang: RecipeLang): Recipe {
 
 /** True when showing the recipe in `lang` still needs a translation. */
 export function needsTranslation(r: Recipe, lang: RecipeLang): boolean {
-  if (r.language === lang || r.translations?.[lang]) return false;
+  if (r.language === lang || translationFits(r, r.translations?.[lang])) return false;
   // Nothing to translate in an empty or failed extraction.
   return Boolean(r.ingredients?.length || r.instructions?.length);
 }
