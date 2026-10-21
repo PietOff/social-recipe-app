@@ -1,6 +1,6 @@
 import { Ingredient } from '../types';
 import { Lang } from './i18n';
-import { ingredientQuantity } from './recipes';
+import { localUnit } from './quantity';
 import { formatAmount, scaleIngredients } from './scale';
 import { normalize } from './text';
 
@@ -120,7 +120,13 @@ export function aggregate(list: ShoppingList, lang: Lang = 'en'): ShoppingItem[]
       }
       item.recipes.add(entry.title);
 
-      const text = ingredientQuantity(ing);
+      // Units in the reader's language and in the singular, so "1 tbsp" and
+      // "2 eetlepels" add up; the plural is chosen again for the total.
+      const amount = (ing.amount || '').trim();
+      let unit = localUnit(ing.unit, '1', lang);
+      // "200g" already carries its unit.
+      if (unit && amount.toLowerCase().endsWith((ing.unit || '').trim().toLowerCase())) unit = '';
+      const text = [amount, unit].filter(Boolean).join(' ');
       if (!text) continue;
       const quantity = parseQuantity(text);
       if (quantity) {
@@ -138,7 +144,8 @@ export function aggregate(list: ShoppingList, lang: Lang = 'en'): ShoppingItem[]
     key,
     name: item.name,
     amounts: [
-      ...[...item.sums.values()].map(s => [formatAmount(s.value, lang), s.unit].filter(Boolean).join(' ')),
+      ...[...item.sums.values()].map(s =>
+        [formatAmount(s.value, lang), localUnit(s.unit, String(s.value), lang)].filter(Boolean).join(' ')),
       ...item.other,
     ],
     recipes: [...item.recipes],

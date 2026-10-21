@@ -1,6 +1,7 @@
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Ingredient, Recipe } from '../types';
+import { isCountUnit } from './quantity';
 
 const PLATFORM_DOMAINS = ['tiktok.com', 'instagram.com', 'youtube.com', 'youtu.be'];
 
@@ -88,6 +89,31 @@ export function recipeKey(recipe: Partial<Recipe>): string {
   return recipe.id || recipe.video_id || recipe.source_url || recipe.title || '';
 }
 
+/** A web link without tracking parameters, fragment, "www." or trailing slash. */
+function comparableUrl(url: string): string | null {
+  try {
+    const u = new URL(url.trim());
+    const host = u.hostname.toLowerCase().replace(/^www\./, '');
+    const path = u.pathname.replace(/\/+$/, '');
+    return `${host}${path}`;
+  } catch {
+    return null;
+  }
+}
+
+/** The saved recipe this link points to, if it is already in the cookbook. */
+export function findSavedRecipe(link: string, saved: Recipe[]): Recipe | null {
+  const vid = videoIdFromUrl(link);
+  if (vid) {
+    return saved.find(r => (r.video_id || videoIdFromUrl(r.source_url)) === vid) ?? null;
+  }
+  // Short links (vm.tiktok.com/...) carry no id; only the backend can resolve them.
+  if (isPlatformUrl(link)) return null;
+  const target = comparableUrl(link);
+  if (!target) return null;
+  return saved.find(r => r.source_url && comparableUrl(r.source_url) === target) ?? null;
+}
+
 export function isSameRecipe(a: Partial<Recipe>, b: Partial<Recipe>): boolean {
   const av = a.video_id || videoIdFromUrl(a.source_url);
   const bv = b.video_id || videoIdFromUrl(b.source_url);
@@ -113,20 +139,42 @@ export function thumbnailSrc(recipe: Partial<Recipe>): string | undefined {
 
 /** "400 g" from amount + unit, without doubling a unit the amount already
  *  carries: the extractor often returns amount "400g" with unit "g". */
-/**
- * "Units" that only say the thing is counted. "1 stuk ei" or "2 pieces onion"
- * reads oddly; "1 ei" and "2 onion" say the same. The AI sometimes fills these
- * in, and translation turns "piece" into "stuk", so they are dropped on display.
- */
-const COUNT_UNITS = new Set([
-  'piece', 'pieces', 'pc', 'pcs', 'pc.', 'pcs.', 'item', 'items', 'unit', 'units', 'whole', 'x',
-  'stuk', 'stuks', 'st', 'st.', 'stk', 'stk.',
-]);
 
+/** The ingredients with count-only units removed, or null when none had one. */
+function cleanIngredients(list: Ingredient[] | undefined): Ingredient[] | null {
+  if (!list?.some(ing => isCountUnit(ing.unit))) return null;
+  return list.map(ing => (isCountUnit(ing.unit) ? { ...ing, unit: '' } : ing));
+}
+
+/**
+ * The recipe with count-only units removed from its ingredients and from any
+ * cached translation, or null when there was nothing to clean. Used to tidy
+ * recipes saved before the extractor stopped writing "piece".
+ */
+export function withoutCountUnits(r: Recipe): Recipe | null {
+  let changed = false;
+  const next: Recipe = { ...r };
+  const own = cleanIngredients(r.ingredients);
+  if (own) { next.ingredients = own; changed = true; }
+  if (r.translations) {
+    const translations = { ...r.translations };
+    for (const lang of Object.keys(translations) as Array<keyof typeof translations>) {
+      const text = translations[lang];
+      const cleaned = text && cleanIngredients(text.ingredients);
+      if (text && cleaned) { translations[lang] = { ...text, ingredients: cleaned }; changed = true; }
+    }
+    next.translations = translations;
+  }
+  return changed ? next : null;
+}
+
+export { isCountUnit };
+
+/** Kept for code that wants the stored text without language formatting. */
 export function ingredientQuantity(ing: Pick<Ingredient, 'amount' | 'unit'>): string {
   const amount = (ing.amount || '').trim();
   let unit = (ing.unit || '').trim();
-  if (COUNT_UNITS.has(unit.toLowerCase())) unit = '';
+  if (isCountUnit(unit)) unit = '';
   if (unit && amount.toLowerCase().endsWith(unit.toLowerCase())) unit = '';
   return [amount, unit].filter(Boolean).join(' ');
 }

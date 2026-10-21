@@ -4,7 +4,8 @@ import React, { useState, useEffect } from 'react';
 import { Recipe } from '../../../types';
 import { db, auth } from '../../../firebase';
 import { doc, getDoc } from 'firebase/firestore';
-import { ingredientQuantity, saveRecipeToCloud, thumbnailSrc } from '../../../lib/recipes';
+import { saveRecipeToCloud, thumbnailSrc } from '../../../lib/recipes';
+import { displayQuantity } from '../../../lib/quantity';
 import { labelText, useLang } from '../../../lib/i18n';
 
 export default function SharePage({ params }: { params: Promise<{ token: string }> }) {
@@ -139,7 +140,7 @@ export default function SharePage({ params }: { params: Promise<{ token: string 
                   <h3 style={styles.sectionTitle}>{t.ingredients}</h3>
                   <ul style={styles.list}>
                     {recipe.ingredients.map((ing, j) => (
-                      <li key={j}><b>{ingredientQuantity(ing)}</b> {ing.item}</li>
+                      <li key={j}><b>{displayQuantity(ing, lang)}</b> {ing.item}</li>
                     ))}
                   </ul>
                 </div>
