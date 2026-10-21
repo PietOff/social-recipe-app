@@ -1225,6 +1225,11 @@ def generate_json(prompt: str, system: str) -> dict:
     )
 
 
+def normalize_language(language: str) -> str:
+    """The app's two recipe languages; anything else is treated as English."""
+    return "nl" if (language or "").lower().startswith("nl") else "en"
+
+
 def _language_rule(language: str) -> str:
     """Rule 6 of the extraction prompt. Tags are the exception to the output
     language: the app filters, labels and orders cookbook chapters by those
@@ -1835,9 +1840,126 @@ def extract_website_recipe(url: str, language: str) -> dict:
         raise HTTPException(status_code=422, detail="No recipe found on this page.")
     recipe_data["video_id"] = None
     recipe_data["source_url"] = source_url
+    recipe_data["language"] = normalize_language(language)
     recipe_data["image_url"] = page["image"] or None
     logger.info(f"Extraction succeeded via website ({'json-ld' if page['structured'] else 'page text'}) for {source_url}")
     return recipe_data
+
+
+class TranslateIngredient(BaseModel):
+    item: str = ""
+    amount: Optional[str] = ""
+    unit: Optional[str] = ""
+    group: Optional[str] = ""
+
+
+class TranslateRecipe(BaseModel):
+    title: str = ""
+    description: Optional[str] = ""
+    ingredients: List[TranslateIngredient] = []
+    instructions: List[str] = []
+    prep_time: Optional[str] = None
+    cook_time: Optional[str] = None
+    servings: Optional[str] = None
+
+
+class TranslateRequest(BaseModel):
+    recipe: TranslateRecipe
+    language: str = "en"
+
+
+# Generous for one recipe, small enough that this can't be used as a free
+# general-purpose translation API.
+MAX_TRANSLATE_CHARS = 20000
+
+TRANSLATED_TEXT_FIELDS = ("title", "description", "prep_time", "cook_time", "servings")
+
+
+def merge_translation(original: dict, translated: dict) -> dict:
+    """The translated text fields laid over the original's structure.
+
+    Amounts and the number and order of ingredients and steps come from the
+    original, so a model that drops, merges or reorders lines can't silently
+    change the recipe; it can only change wording.
+    """
+    out = {}
+    for key in TRANSLATED_TEXT_FIELDS:
+        value = translated.get(key) if isinstance(translated, dict) else None
+        out[key] = value if isinstance(value, str) and value.strip() else original.get(key)
+
+    orig_ings = original.get("ingredients") or []
+    new_ings = translated.get("ingredients") if isinstance(translated, dict) else None
+    if not isinstance(new_ings, list) or len(new_ings) != len(orig_ings):
+        new_ings = [{}] * len(orig_ings)
+    ingredients = []
+    for orig, new in zip(orig_ings, new_ings):
+        new = new if isinstance(new, dict) else {}
+        merged = dict(orig)
+        for key in ("item", "unit", "group"):
+            value = new.get(key)
+            if isinstance(value, str) and (value.strip() or not orig.get(key)):
+                merged[key] = value
+        # "Main" is the app's default group key and is never translated.
+        if (orig.get("group") or "") == "Main":
+            merged["group"] = "Main"
+        ingredients.append(merged)
+    out["ingredients"] = ingredients
+
+    orig_steps = original.get("instructions") or []
+    new_steps = translated.get("instructions") if isinstance(translated, dict) else None
+    if (isinstance(new_steps, list) and len(new_steps) == len(orig_steps)
+            and all(isinstance(x, str) and x.strip() for x in new_steps)):
+        out["instructions"] = new_steps
+    else:
+        out["instructions"] = list(orig_steps)
+    return out
+
+
+def _translate_prompt(recipe: dict, language: str) -> str:
+    target = "Dutch (Nederlands)" if language == "nl" else "English"
+    units = ('Use Dutch cooking words and units ("eetlepel", "theelepel", "teentje", '
+             '"10 minuten", "4 personen").' if language == "nl" else
+             'Use plain English cooking words ("tablespoon", "teaspoon", "clove", '
+             '"10 mins", "4 people").')
+    return f"""Translate this recipe into {target}. If a field is already in {target}, keep it as it is.
+
+RULES:
+1. Translate the wording only. Keep every amount and number exactly as given. Keep metric units.
+2. Keep exactly the same number of ingredients and instructions, in the same order. Never merge, split, add or drop lines.
+3. {units}
+4. Ingredient groups are short headings: translate them too, except "Main", which stays "Main".
+5. Return ONLY a JSON object with the same keys and structure as the input.
+
+Recipe JSON:
+{json.dumps(recipe, ensure_ascii=False)}
+"""
+
+
+@app.post("/translate-recipe")
+def translate_recipe(request: TranslateRequest, _rl: None = Depends(rate_limit)):
+    if not (os.getenv("GEMINI_API_KEY") or os.getenv("GROQ_API_KEY")):
+        raise HTTPException(status_code=503, detail="No LLM provider configured on the server.")
+    language = normalize_language(request.language)
+    original = request.recipe.model_dump()
+    if len(json.dumps(original, ensure_ascii=False)) > MAX_TRANSLATE_CHARS:
+        raise HTTPException(status_code=413, detail="This recipe is too long to translate.")
+    try:
+        translated = generate_json(
+            _translate_prompt(original, language),
+            "You are a JSON-only API. You must return a valid JSON object and nothing else.",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_if_quota(e)
+        logger.error(f"Translation failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="The recipe AI is unavailable right now. Please try again in a moment.",
+        )
+    result = merge_translation(original, translated if isinstance(translated, dict) else {})
+    result["language"] = language
+    return result
 
 
 @app.post("/extract-recipe")
@@ -1858,6 +1980,7 @@ def extract_recipe(request: ExtractRequest, _rl: None = Depends(rate_limit)):
     def finalize(recipe_data: dict, thumbnail_url, source: str):
         recipe_data["video_id"] = vid
         recipe_data["source_url"] = safe_url
+        recipe_data["language"] = normalize_language(request.language)
         recipe_data["image_url"] = rehost_thumbnail(thumbnail_url, vid or safe_url)
         logger.info(f"Extraction succeeded via {source} for {safe_url}")
         return recipe_data

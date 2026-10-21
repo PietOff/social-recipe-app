@@ -59,7 +59,8 @@ import { addPendingSync, flushPendingSync, loadPendingSync, mergeSynced } from '
 import { MOOD_CHIPS, recommendFromCookbook, Suggestion } from '../lib/recommend';
 import { hasLabel, labelFacets, labelValues } from '../lib/labels';
 import { exportRecipesToPdf } from '../lib/printExport';
-import { getStrings, labelText, useLang } from '../lib/i18n';
+import { getStrings, labelText, preferredLang, useLang } from '../lib/i18n';
+import { asEdited, fetchTranslation, localized, needsTranslation, withTranslation } from '../lib/translate';
 import { matchesQuery, searchableText } from '../lib/search';
 import { localizeError } from '../lib/errors';
 import { isSortOrder, sortRecipes, SortOrder } from '../lib/sort';
@@ -206,6 +207,8 @@ function HomeContent() {
           source_url: data.source_url || null,
           video_id: data.video_id || null,
           created_at: typeof data.created_at === 'number' ? data.created_at : undefined,
+          language: data.language === 'nl' || data.language === 'en' ? data.language : undefined,
+          translations: data.translations || undefined,
         });
       });
       // An empty result is only trustworthy when it came from the server AND we
@@ -466,8 +469,8 @@ function HomeContent() {
   // The recipe is written in the UI language. Tags stay English either way
   // (see parse_with_llm), so filters and labels keep working across a
   // cookbook that mixes both.
-  const extractSingleRecipe = async (videoUrl: string): Promise<Recipe> => {
-    const request = () => apiPost<Recipe>('/extract-recipe', { url: videoUrl.trim(), language: lang });
+  const extractSingleRecipe = async (videoUrl: string, language = lang): Promise<Recipe> => {
+    const request = () => apiPost<Recipe>('/extract-recipe', { url: videoUrl.trim(), language });
     try {
       return await request();
     } catch (e) {
@@ -524,7 +527,7 @@ function HomeContent() {
     await extractLink(url);
   };
 
-  const extractLink = async (link: string) => {
+  const extractLink = async (link: string, language = lang) => {
     if (!link) return;
 
     if (!isSupportedRecipeUrl(link)) {
@@ -602,7 +605,7 @@ function HomeContent() {
         }
       }
 
-      const data = await extractSingleRecipe(link);
+      const data = await extractSingleRecipe(link, language);
       setRecipe(data);
     } catch (err: any) {
       setError(err.message);
@@ -623,8 +626,10 @@ function HomeContent() {
     window.history.replaceState(null, '', withoutShareParams(window.location.pathname, window.location.search, window.location.hash));
     setView('home');
     setUrl(link);
-    void extractLink(link);
-    // Runs once on load; extractLink reads the first render's language, which is fine here.
+    // The language provider applies the stored preference after this first
+    // render, so read it directly or the recipe comes back in English.
+    void extractLink(link, preferredLang());
+    // Runs once on load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -655,7 +660,9 @@ function HomeContent() {
   };
 
   // --- Portions: target servings, or a multiplier when the recipe has no count.
-  const baseServings = recipe ? parseServings(recipe.servings) : null;
+  // The open recipe in the reader's language (see lib/translate.ts).
+  const shownRecipe = React.useMemo(() => (recipe ? localized(recipe, lang) : null), [recipe, lang]);
+  const baseServings = shownRecipe ? parseServings(shownRecipe.servings) : null;
   const [servingsTarget, setServingsTarget] = useState(1);
   const currentRecipeKey = recipe ? recipeKey(recipe) : '';
   React.useEffect(() => {
@@ -666,15 +673,70 @@ function HomeContent() {
   }, [currentRecipeKey]);
   const scaleFactor = baseServings ? servingsTarget / baseServings : servingsTarget;
   const displayRecipe = React.useMemo(
-    () => (recipe && scaleFactor !== 1 ? scaleRecipe(recipe, scaleFactor, lang) : recipe),
-    [recipe, scaleFactor, lang],
+    () => (shownRecipe && scaleFactor !== 1 ? scaleRecipe(shownRecipe, scaleFactor, lang) : shownRecipe),
+    [shownRecipe, scaleFactor, lang],
   );
+
+  // --- Translating the open recipe into the reader's language, once.
+  const [translating, setTranslating] = useState(false);
+  const [translateError, setTranslateError] = useState(false);
+  const translateAttempted = React.useRef(new Set<string>());
+  const translateRun = React.useRef(0);
+  React.useEffect(() => {
+    if (!recipe || !needsTranslation(recipe, lang)) {
+      setTranslateError(false);
+      return;
+    }
+    const attemptKey = `${recipeKey(recipe)}|${lang}`;
+    if (translateAttempted.current.has(attemptKey)) return;
+    translateAttempted.current.add(attemptKey);
+
+    const source = recipe;
+    const run = ++translateRun.current;
+    const isLatest = () => run === translateRun.current;
+    setTranslating(true);
+    setTranslateError(false);
+    fetchTranslation(source, lang)
+      .then(text => {
+        const next = withTranslation(source, lang, text);
+        // Only lands on the screen if that recipe is still the open one.
+        setRecipe(cur => (cur && isSameRecipe(cur, source) ? next : cur));
+        // Keep it with the saved copy too, so it is only ever translated once.
+        if (savedRecipes.some(r => isSameRecipe(r, source))) {
+          setSavedRecipes(prev => {
+            const list = prev.map(r => (isSameRecipe(r, source) ? withTranslation(r, lang, text) : r));
+            try {
+              localStorage.setItem(user ? 'chefSocial_cached_cookbook' : 'chefSocial_cookbook', JSON.stringify(list));
+            } catch { /* quota */ }
+            return list;
+          });
+          const stored = savedRecipes.find(r => isSameRecipe(r, source));
+          if (user && stored?.id) {
+            updateRecipeInCloud(user.id, withTranslation(stored, lang, text)).catch(e =>
+              console.warn('Saving translation failed', e));
+          }
+        }
+      })
+      .catch(e => {
+        console.warn('Translation failed', e);
+        if (isLatest()) setTranslateError(true);
+      })
+      .finally(() => {
+        if (isLatest()) setTranslating(false);
+      });
+    // Re-run when another recipe opens or the language changes, not on every
+    // cookbook update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recipe && recipeKey(recipe), lang, Boolean(recipe && needsTranslation(recipe, lang))]);
 
   // --- Editing a recipe in place.
   const [editing, setEditing] = useState(false);
-  const handleSaveEdit = async (updated: Recipe) => {
+  const handleSaveEdit = async (edited: Recipe) => {
     const original = recipe;
     if (!original) return;
+    // The editor showed the text in the reader's language, so that is now the
+    // recipe's language and older translations are out of date.
+    const updated = asEdited(edited, lang);
     setRecipe(updated);
     setServingsTarget(parseServings(updated.servings) ?? 1);
     setEditing(false);
@@ -732,7 +794,8 @@ function HomeContent() {
 
   const handleExportPdf = (recipesToExport: Recipe[], cookbook: boolean) => {
     if (recipesToExport.length === 0) return;
-    exportRecipesToPdf(recipesToExport, { cookbook, title: t.pdfCookbookTitle, lang });
+    // Recipes not yet translated print in their own language.
+    exportRecipesToPdf(recipesToExport.map(r => localized(r, lang)), { cookbook, title: t.pdfCookbookTitle, lang });
   };
 
   const [shareLink, setShareLink] = useState<string | null>(null);
@@ -1400,7 +1463,7 @@ function HomeContent() {
               {recipe && (
                 <div className={styles.recipeCard}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '0.5rem' }}>
-                    <h2 className={styles.recipeTitle} style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{recipe.title}</h2>
+                    <h2 className={styles.recipeTitle} style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{shownRecipe?.title}</h2>
                     <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end', flexShrink: 0, maxWidth: '60%' }}>
                       {!editing && (
                         <button onClick={() => setEditing(true)} className={styles.iconButton} title={t.editRecipe} aria-label={t.editRecipe}>✏️</button>
@@ -1412,10 +1475,12 @@ function HomeContent() {
                     </div>
                   </div>
                   {editing ? (
-                    <RecipeEditor recipe={recipe} onSave={handleSaveEdit} onCancel={() => setEditing(false)} />
+                    <RecipeEditor recipe={shownRecipe ?? recipe} onSave={handleSaveEdit} onCancel={() => setEditing(false)} />
                   ) : (
                   <>
-                  <p className={styles.recipeDesc}>{recipe.description}</p>
+                  <p className={styles.recipeDesc}>{shownRecipe?.description}</p>
+                  {translating && <p className={styles.serverHint} role="status">{t.translating}</p>}
+                  {translateError && !translating && <p className={styles.serverHint} role="status">{t.translateFailed}</p>}
                   {recipe.source_url && isWebUrl(recipe.source_url) && (
                     <a
                       href={recipe.source_url}
@@ -1437,8 +1502,8 @@ function HomeContent() {
                   </div>
 
                   <div className={styles.metaGrid}>
-                    <div className={styles.metaItem}>⏱ {recipe.prep_time || '--'}</div>
-                    <div className={styles.metaItem}>🔥 {recipe.cook_time || '--'}</div>
+                    <div className={styles.metaItem}>⏱ {shownRecipe?.prep_time || '--'}</div>
+                    <div className={styles.metaItem}>🔥 {shownRecipe?.cook_time || '--'}</div>
                     <div className={styles.metaItem}>👥 {displayRecipe?.servings || '--'}</div>
                   </div>
 
@@ -1448,7 +1513,7 @@ function HomeContent() {
                       type="button"
                       className={styles.iconButton}
                       style={{ width: 'auto', padding: '0 0.9rem', fontSize: '0.9rem' }}
-                      onClick={() => (onShoppingList ? setView('shopping') : addToShopping([recipe], scaleFactor))}
+                      onClick={() => (onShoppingList ? setView('shopping') : addToShopping([shownRecipe ?? recipe], scaleFactor))}
                     >
                       {onShoppingList ? t.onShoppingList : t.addToShopping}
                     </button>
@@ -1458,7 +1523,7 @@ function HomeContent() {
                     <div className={styles.ingredients}>
                       <h3>{t.ingredients}</h3>
                       {Object.entries(
-                        (displayRecipe ?? recipe).ingredients.reduce((acc, ing) => {
+                        (displayRecipe ?? shownRecipe ?? recipe).ingredients.reduce((acc, ing) => {
                           const group = ing.group || 'Main';
                           if (!acc[group]) acc[group] = [];
                           acc[group].push(ing);
@@ -1482,7 +1547,7 @@ function HomeContent() {
                     <div className={styles.instructions}>
                       <h3>{t.instructions}</h3>
                       <ol>
-                        {recipe.instructions.map((step, i) => (
+                        {(shownRecipe ?? recipe).instructions.map((step, i) => (
                           <li key={i}>{step}</li>
                         ))}
                       </ol>
@@ -1613,7 +1678,7 @@ function HomeContent() {
                         <span style={{ fontSize: '2rem', display: thumb ? 'none' : 'block' }}>🍳</span>
                       </div>
                       <div className={styles.cookbookContent}>
-                        <h4>{suggested.title}</h4>
+                        <h4>{localized(suggested, lang).title}</h4>
                         {reason && <p className={styles.suggestReason}>{reason}</p>}
                         <div className={styles.tagsRow}>
                           {labelValues(suggested).slice(0, 3).map(tag => (
@@ -1744,7 +1809,7 @@ function HomeContent() {
                     </button>
                     <button
                       onClick={() => {
-                        addToShopping(savedRecipes.filter(r => bulkSelected.has(recipeKey(r))));
+                        addToShopping(savedRecipes.filter(r => bulkSelected.has(recipeKey(r))).map(r => localized(r, lang)));
                         setSelectMode(false); setBulkSelected(new Set());
                         setView('shopping'); window.scrollTo({ top: 0, behavior: 'smooth' });
                       }}
@@ -1877,7 +1942,7 @@ function HomeContent() {
                         <span style={{ fontSize: '2rem', display: thumb ? 'none' : 'block' }}>🍳</span>
                       </div>
                       <div className={styles.cookbookContent}>
-                        <h4>{r.title}</h4>
+                        <h4>{localized(r, lang).title}</h4>
                         <div className={styles.tagsRow}>
                           {labelValues(r).slice(0, 3).map(tag => (
                             <span key={tag}>{labelText(tag, lang)}</span>

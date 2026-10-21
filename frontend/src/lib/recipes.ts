@@ -136,6 +136,8 @@ export function toFirestoreDoc(uid: string, recipe: Recipe) {
     video_id: recipe.video_id || videoIdFromUrl(recipe.source_url) || null,
     // Kept on re-save, so re-syncing a recipe does not move it to the top.
     created_at: recipe.created_at || Date.now(),
+    language: recipe.language || null,
+    translations: recipe.translations || null,
   };
 }
 
