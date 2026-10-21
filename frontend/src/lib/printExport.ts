@@ -1,6 +1,6 @@
 import { Recipe, Ingredient } from '../types';
 import { getLang, labelText, Lang, STRINGS, Strings } from './i18n';
-import { ingredientQuantity } from './recipes';
+import { displayQuantity } from './quantity';
 
 /**
  * PDF / print export.
@@ -80,7 +80,7 @@ let t: Strings = STRINGS.en;
 let lang: Lang = 'en';
 
 function ingredientLine(ing: Ingredient): string {
-    const qty = ingredientQuantity(ing);
+    const qty = displayQuantity(ing, lang);
     const item = ing.item || '';
     return `<li>${qty ? `<b>${escapeHtml(qty)}</b> ` : ''}${escapeHtml(item)}</li>`;
 }

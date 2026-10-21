@@ -52,6 +52,7 @@ import {
   isWebUrl,
   thumbnailSrc,
   withoutCountUnits,
+  findSavedRecipe,
   loadFailedImportIds,
   clearFailedImportIds,
 } from '../lib/recipes';
@@ -61,6 +62,7 @@ import { MOOD_CHIPS, recommendFromCookbook, Suggestion } from '../lib/recommend'
 import { hasLabel, labelFacets, labelValues } from '../lib/labels';
 import { exportRecipesToPdf } from '../lib/printExport';
 import { getStrings, labelText, preferredLang, useLang } from '../lib/i18n';
+import { displayQuantity } from '../lib/quantity';
 import { asEdited, fetchTranslation, localized, needsTranslation, withTranslation } from '../lib/translate';
 import { matchesQuery, searchableText } from '../lib/search';
 import { localizeError } from '../lib/errors';
@@ -551,6 +553,17 @@ function HomeContent() {
 
   const extractLink = async (link: string, language = lang) => {
     if (!link) return;
+
+    // Already in the cookbook: open the saved copy instead of fetching it
+    // again (quicker, and it keeps any edits and translations).
+    const existing = findSavedRecipe(link, savedRecipesRef.current);
+    if (existing) {
+      setError(null);
+      setCollectionVideos(null);
+      setCollectionTitle(null);
+      setRecipe(existing);
+      return;
+    }
 
     if (!isSupportedRecipeUrl(link)) {
       setError(t.errUnsupportedUrl);
@@ -1559,7 +1572,7 @@ function HomeContent() {
                           <ul>
                             {items.map((ing, i) => (
                               <li key={i}>
-                                <b>{ingredientQuantity(ing)}</b> {ing.item}
+                                <b>{displayQuantity(ing, lang)}</b> {ing.item}
                               </li>
                             ))}
                           </ul>

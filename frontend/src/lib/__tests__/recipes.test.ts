@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ingredientQuantity, isPlatformUrl, isWebUrl, videoIdFromUrl, withoutCountUnits } from '../recipes';
+import { findSavedRecipe, ingredientQuantity, isPlatformUrl, isWebUrl, videoIdFromUrl, withoutCountUnits } from '../recipes';
 
 describe('ingredientQuantity', () => {
   it('does not repeat a unit the amount already has', () => {
@@ -69,5 +69,27 @@ describe('withoutCountUnits', () => {
 
   it('returns null when there is nothing to clean', () => {
     expect(withoutCountUnits({ ...base, ingredients: [{ item: 'flour', amount: '250', unit: 'g' }] })).toBeNull();
+  });
+});
+
+describe('findSavedRecipe', () => {
+  const saved = [
+    { title: 'Ragu', description: '', ingredients: [], instructions: [],
+      source_url: 'https://www.tiktok.com/@hotplate_harry/video/7698055729399254294', video_id: '7698055729399254294' },
+    { title: 'Worstenbroodjes', description: '', ingredients: [], instructions: [],
+      source_url: 'https://smaakmenutie.nl/brabantse-worstenbroodjes/' },
+  ];
+
+  it('finds a video by its id, whatever the link looks like', () => {
+    expect(findSavedRecipe('https://www.tiktok.com/@hotplate_harry/video/7698055729399254294?is_from_webapp=1', saved)?.title).toBe('Ragu');
+  });
+
+  it('finds a website recipe ignoring tracking, www and trailing slash', () => {
+    expect(findSavedRecipe('https://www.smaakmenutie.nl/brabantse-worstenbroodjes?utm_source=ig&fbclid=x', saved)?.title).toBe('Worstenbroodjes');
+  });
+
+  it('returns null for new links and unresolved short links', () => {
+    expect(findSavedRecipe('https://smaakmenutie.nl/andere-recept/', saved)).toBeNull();
+    expect(findSavedRecipe('https://vm.tiktok.com/ZNdAbCdEf/', saved)).toBeNull();
   });
 });
