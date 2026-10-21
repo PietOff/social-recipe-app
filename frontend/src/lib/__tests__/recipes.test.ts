@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ingredientQuantity, isPlatformUrl, isWebUrl, videoIdFromUrl } from '../recipes';
+import { ingredientQuantity, isPlatformUrl, isWebUrl, videoIdFromUrl, withoutCountUnits } from '../recipes';
 
 describe('ingredientQuantity', () => {
   it('does not repeat a unit the amount already has', () => {
@@ -38,5 +38,36 @@ describe('recipe website links', () => {
     expect(videoIdFromUrl('https://www.example.nl/video/12345/pannenkoeken')).toBeNull();
     expect(videoIdFromUrl('https://www.example.nl/recept?v=abcdefghijk')).toBeNull();
     expect(videoIdFromUrl('https://www.tiktok.com/@chef/video/12345')).toBe('12345');
+  });
+});
+
+describe('withoutCountUnits', () => {
+  const base = {
+    id: 'u_1', title: 'Ragu', description: '', instructions: ['Cook.'],
+    ingredients: [
+      { item: 'egg', amount: '1', unit: 'piece' },
+      { item: 'flour', amount: '250', unit: 'g' },
+    ],
+  };
+
+  it('removes count-only units and keeps the rest', () => {
+    const out = withoutCountUnits(base)!;
+    expect(out.ingredients.map(i => i.unit)).toEqual(['', 'g']);
+    expect(out.id).toBe('u_1');
+    expect(base.ingredients[0].unit).toBe('piece'); // original untouched
+  });
+
+  it('cleans cached translations too', () => {
+    const out = withoutCountUnits({
+      ...base,
+      ingredients: [{ item: 'flour', amount: '250', unit: 'g' }],
+      translations: { nl: { title: 'Ragu', description: '', instructions: ['Kook.'],
+        ingredients: [{ item: 'ei', amount: '1', unit: 'stuk' }] } },
+    })!;
+    expect(out.translations!.nl!.ingredients[0].unit).toBe('');
+  });
+
+  it('returns null when there is nothing to clean', () => {
+    expect(withoutCountUnits({ ...base, ingredients: [{ item: 'flour', amount: '250', unit: 'g' }] })).toBeNull();
   });
 });

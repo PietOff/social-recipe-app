@@ -123,10 +123,42 @@ const COUNT_UNITS = new Set([
   'stuk', 'stuks', 'st', 'st.', 'stk', 'stk.',
 ]);
 
+export function isCountUnit(unit: string | undefined | null): boolean {
+  return COUNT_UNITS.has((unit || '').trim().toLowerCase());
+}
+
+/** The ingredients with count-only units removed, or null when none had one. */
+function cleanIngredients(list: Ingredient[] | undefined): Ingredient[] | null {
+  if (!list?.some(ing => isCountUnit(ing.unit))) return null;
+  return list.map(ing => (isCountUnit(ing.unit) ? { ...ing, unit: '' } : ing));
+}
+
+/**
+ * The recipe with count-only units removed from its ingredients and from any
+ * cached translation, or null when there was nothing to clean. Used to tidy
+ * recipes saved before the extractor stopped writing "piece".
+ */
+export function withoutCountUnits(r: Recipe): Recipe | null {
+  let changed = false;
+  const next: Recipe = { ...r };
+  const own = cleanIngredients(r.ingredients);
+  if (own) { next.ingredients = own; changed = true; }
+  if (r.translations) {
+    const translations = { ...r.translations };
+    for (const lang of Object.keys(translations) as Array<keyof typeof translations>) {
+      const text = translations[lang];
+      const cleaned = text && cleanIngredients(text.ingredients);
+      if (text && cleaned) { translations[lang] = { ...text, ingredients: cleaned }; changed = true; }
+    }
+    next.translations = translations;
+  }
+  return changed ? next : null;
+}
+
 export function ingredientQuantity(ing: Pick<Ingredient, 'amount' | 'unit'>): string {
   const amount = (ing.amount || '').trim();
   let unit = (ing.unit || '').trim();
-  if (COUNT_UNITS.has(unit.toLowerCase())) unit = '';
+  if (isCountUnit(unit)) unit = '';
   if (unit && amount.toLowerCase().endsWith(unit.toLowerCase())) unit = '';
   return [amount, unit].filter(Boolean).join(' ');
 }

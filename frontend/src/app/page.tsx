@@ -51,6 +51,7 @@ import {
   isPlatformUrl,
   isWebUrl,
   thumbnailSrc,
+  withoutCountUnits,
   loadFailedImportIds,
   clearFailedImportIds,
 } from '../lib/recipes';
@@ -173,7 +174,12 @@ function HomeContent() {
         const saved = localStorage.getItem('chefSocial_cookbook');
         if (saved && !cachedCookbook) {
           try {
-            setSavedRecipes(JSON.parse(saved));
+            const local: Recipe[] = JSON.parse(saved);
+            const tidied = local.map(r => withoutCountUnits(r) ?? r);
+            setSavedRecipes(tidied);
+            if (tidied.some((r, i) => r !== local[i])) {
+              localStorage.setItem('chefSocial_cookbook', JSON.stringify(tidied));
+            }
           } catch (e) {
             console.error('Failed to load old cookbook', e);
           }
@@ -230,10 +236,26 @@ function HomeContent() {
         return; // Leave savedRecipes and the cache exactly as they are.
       }
 
+      // Older recipes can carry "piece"/"stuk" as a unit ("1 stuk ei"). Show
+      // them tidied straight away and write the tidied copies back once.
+      const tidied = recipes.map(r => withoutCountUnits(r) ?? r);
+      const toRewrite = tidied.filter((r, i) => r !== recipes[i]);
+
       // Sort client-side (no index required)
-      setSavedRecipes(recipes);
-      if (!querySnapshot.metadata.fromCache || recipes.length > 0) {
-        localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(recipes));
+      setSavedRecipes(tidied);
+      if (!querySnapshot.metadata.fromCache || tidied.length > 0) {
+        localStorage.setItem('chefSocial_cached_cookbook', JSON.stringify(tidied));
+      }
+      if (toRewrite.length && !querySnapshot.metadata.fromCache) {
+        void (async () => {
+          for (const r of toRewrite) {
+            try {
+              await updateRecipeInCloud(uid, r);
+            } catch (e) {
+              console.warn('Tidying a recipe failed; it will be retried next load', e);
+            }
+          }
+        })();
       }
 
       // Hydrate imported IDs from the cloud to prevent duplicates across devices
@@ -243,7 +265,7 @@ function HomeContent() {
       setImportedVideoIds(prev => new Set([...prev, ...cloudIds]));
 
       // The database is reachable, so anything stuck in the queue can go up now.
-      await retryPendingSync(uid, recipes);
+      await retryPendingSync(uid, tidied);
     } catch (e: any) {
       console.error('Failed to fetch cloud recipes', e);
       if (e.code === 'permission-denied') {
