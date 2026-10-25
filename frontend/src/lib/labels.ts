@@ -1,5 +1,6 @@
 import { Recipe } from '../types';
 import { normalize, startsWord } from './text';
+import { nutritionLabels } from './nutrition';
 
 /**
  * Labels derived from a recipe's own content.
@@ -12,7 +13,7 @@ import { normalize, startsWord } from './text';
  * cookbook without re-extracting anything.
  */
 
-export type LabelKind = 'time' | 'protein' | 'method' | 'effort' | 'cuisine' | 'tag';
+export type LabelKind = 'time' | 'protein' | 'method' | 'effort' | 'cuisine' | 'nutrition' | 'tag';
 
 /** Case-, hyphen- and spacing-insensitive key: the extractor's "One-Pan" tag and
  *  the derived "One pan" label are the same label, not two chips. */
@@ -342,6 +343,9 @@ export function recipeLabels(recipe: Recipe): Label[] {
   }
   for (const value of effortLabels(recipe)) {
     labels.push({ value, kind: 'effort' });
+  }
+  for (const value of nutritionLabels(recipe)) {
+    labels.push({ value, kind: 'nutrition' });
   }
 
   // De-dupe on labelKey, keeping the first spelling seen.

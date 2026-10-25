@@ -27,6 +27,20 @@ export interface Recipe {
     language?: RecipeLang;
     /** Cached translations of the text, per language, made on first view. */
     translations?: Partial<Record<RecipeLang, RecipeText>>;
+    /** Estimated nutrition per serving; see lib/nutrition.ts. */
+    nutrition?: Nutrition;
+}
+
+export interface Nutrition {
+    kcal: number;
+    protein: number;
+    carbs: number;
+    fat: number;
+    /** Servings the estimate assumed, when the recipe did not say. */
+    servings?: number | null;
+    /** Fingerprint of the ingredients it was made from; a mismatch means the
+     *  recipe was edited and the estimate is stale. */
+    basis: string;
 }
 
 export type RecipeLang = 'en' | 'nl';
