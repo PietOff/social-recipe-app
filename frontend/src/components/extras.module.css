@@ -241,3 +241,180 @@
     grid-template-columns: 4.5rem 4.5rem 1fr 36px;
   }
 }
+
+/* --- Cooking mode (components/CookingMode.tsx) --- */
+.cookOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: #0f1115;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+  overflow-y: auto;
+}
+
+.cookHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.cookTitle {
+  font-weight: 600;
+  opacity: 0.75;
+  font-size: 0.95rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cookClose {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #fff;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.cookTimers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.cookTimer {
+  background: rgba(255, 142, 83, 0.15);
+  border: 1px solid rgba(255, 142, 83, 0.5);
+  color: #FF8E53;
+  border-radius: 999px;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.cookTimerDone {
+  background: #FF6B6B;
+  border-color: #FF6B6B;
+  color: #fff;
+  animation: cookPulse 1s ease-in-out infinite;
+}
+
+@keyframes cookPulse {
+  50% { transform: scale(1.06); }
+}
+
+.cookTimerStep {
+  opacity: 0.7;
+  font-size: 0.8rem;
+  margin: 0 0.35rem;
+}
+
+.cookProgress {
+  margin-top: 1rem;
+  font-size: 0.85rem;
+  opacity: 0.7;
+}
+
+.cookBar {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  margin-top: 0.4rem;
+  overflow: hidden;
+}
+
+.cookBar > div {
+  height: 100%;
+  background: linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%);
+  transition: width 0.25s ease;
+}
+
+.cookBody {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 1.5rem 0;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.cookStep {
+  font-size: clamp(1.3rem, 4.5vw, 2rem);
+  line-height: 1.45;
+  margin: 0 0 1.25rem;
+}
+
+.cookTimerButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.cookStartTimer {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  border-radius: 12px;
+  padding: 0.6rem 1rem;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.cookIngredients {
+  list-style: none;
+  padding: 0.75rem 1rem;
+  margin: 0 0 0.5rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  font-size: 1.05rem;
+  line-height: 1.7;
+}
+
+.cookIngredients b {
+  color: #FF8E53;
+  font-weight: 600;
+}
+
+.cookNav {
+  display: flex;
+  gap: 0.75rem;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.cookNavButton {
+  flex: 1;
+  padding: 1rem;
+  font-size: 1.05rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  cursor: pointer;
+}
+
+.cookNavButton:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.cookNavPrimary {
+  background: linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%);
+  border: none;
+  font-weight: 600;
+}
