@@ -63,6 +63,7 @@ import { hasLabel, labelFacets, labelValues } from '../lib/labels';
 import { exportRecipesToPdf } from '../lib/printExport';
 import { getStrings, labelText, preferredLang, useLang } from '../lib/i18n';
 import { displayQuantity } from '../lib/quantity';
+import { scaleSteps } from '../lib/steps';
 import { asEdited, fetchTranslation, localized, needsTranslation, withTranslation } from '../lib/translate';
 import { matchesQuery, searchableText } from '../lib/search';
 import { localizeError } from '../lib/errors';
@@ -711,7 +712,12 @@ function HomeContent() {
   }, [currentRecipeKey]);
   const scaleFactor = baseServings ? servingsTarget / baseServings : servingsTarget;
   const displayRecipe = React.useMemo(
-    () => (shownRecipe && scaleFactor !== 1 ? scaleRecipe(shownRecipe, scaleFactor, lang) : shownRecipe),
+    () => {
+      if (!shownRecipe || scaleFactor === 1) return shownRecipe;
+      const scaled = scaleRecipe(shownRecipe, scaleFactor, lang);
+      // Amounts written in the steps ("Doe 250 g bloem...") follow too.
+      return { ...scaled, instructions: scaleSteps(shownRecipe.instructions || [], shownRecipe.ingredients || [], scaleFactor, lang) };
+    },
     [shownRecipe, scaleFactor, lang],
   );
 
@@ -1585,7 +1591,7 @@ function HomeContent() {
                     <div className={styles.instructions}>
                       <h3>{t.instructions}</h3>
                       <ol>
-                        {(shownRecipe ?? recipe).instructions.map((step, i) => (
+                        {(displayRecipe ?? shownRecipe ?? recipe).instructions.map((step, i) => (
                           <li key={i}>{step}</li>
                         ))}
                       </ol>
