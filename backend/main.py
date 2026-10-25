@@ -1120,18 +1120,85 @@ def _gemini_json(prompt: str, system: str, api_key: str) -> str:
     return response.text
 
 
+def extract_json_object(text: str) -> Optional[str]:
+    """The first complete {...} object in a model reply, or None.
+
+    Used when a model wraps its JSON in prose or a ```json fence. Strings are
+    respected, so a "}" inside a value doesn't end the object early.
+    """
+    if not text:
+        return None
+    start = text.find("{")
+    while start != -1:
+        depth, in_str, esc = 0, False, False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start:i + 1]
+                    try:
+                        json.loads(candidate)
+                        return candidate
+                    except ValueError:
+                        break
+        start = text.find("{", start + 1)
+    return None
+
+
 def _groq_json(prompt: str, system: str, api_key: str, model: str) -> str:
+    """Groq in JSON mode, with a fallback for the gpt-oss models.
+
+    In JSON mode Groq validates the reply itself and rejects it with "400
+    Failed to validate JSON" when the model adds anything around the object,
+    which gpt-oss does on longer answers - so when Gemini was out of quota,
+    translation and nutrition failed outright. On that error the rejected
+    reply (Groq returns it as failed_generation) is salvaged if it holds a
+    valid object, and otherwise the request is made once more without JSON
+    mode and the object is taken from the text.
+    """
     client = Groq(api_key=api_key)
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        response = client.chat.completions.create(
+            model=model, temperature=0, response_format={"type": "json_object"}, messages=messages,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        if "failed to validate json" not in str(e).lower():
+            raise
+        failed = ""
+        body = getattr(e, "body", None)
+        if isinstance(body, dict):
+            failed = str((body.get("error") or {}).get("failed_generation") or "")
+        salvaged = extract_json_object(failed)
+        if salvaged:
+            logger.info(f"groq:{model} JSON mode rejected its reply; salvaged the object")
+            return salvaged
+        logger.info(f"groq:{model} JSON mode rejected its reply; retrying as plain text")
     response = client.chat.completions.create(
-        model=model,
-        temperature=0,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
+        model=model, temperature=0,
+        messages=messages + [{"role": "user", "content": "Reply with the JSON object only."}],
     )
-    return response.choices[0].message.content
+    text = response.choices[0].message.content or ""
+    found = extract_json_object(text)
+    if not found:
+        raise ValueError(f"groq:{model} returned no JSON object")
+    return found
 
 
 class PromptTooLarge(Exception):

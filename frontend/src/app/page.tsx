@@ -819,29 +819,32 @@ function HomeContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recipe && recipeKey(recipe), recipe && needsNutrition(recipe)]);
 
-  // Fill in the rest of the cookbook quietly, a few batches per visit so the
-  // AI's free quota is never used up in one go.
+  // Fill in the rest of the cookbook quietly: three batches (24 recipes) per
+  // visit, starting after a minute so it never competes with fetching or
+  // translating a recipe, and stopping at the first error. The AI's free
+  // daily quota is shared with those, and they matter more.
   const nutritionBackfillStarted = React.useRef(false);
   React.useEffect(() => {
     // Signed in only: the estimates are saved to the cloud, and the cookbook
     // must have finished loading from it first.
     if (nutritionBackfillStarted.current || !user || cookbookLoading || savedRecipes.length === 0) return;
     nutritionBackfillStarted.current = true;
-    const queue = savedRecipes.filter(needsNutrition).slice(0, NUTRITION_BATCH * 10);
+    const queue = savedRecipes.filter(needsNutrition).slice(0, NUTRITION_BATCH * 3);
     if (queue.length === 0) return;
-    let stopped = false;
     void (async () => {
-      for (let i = 0; i < queue.length && !stopped; i += NUTRITION_BATCH) {
+      await new Promise(resolve => setTimeout(resolve, 60_000));
+      for (let i = 0; i < queue.length; i += NUTRITION_BATCH) {
         try {
           applyNutrition(await fetchNutrition(queue.slice(i, i + NUTRITION_BATCH)));
         } catch (e) {
           console.warn('Nutrition backfill paused', e);
           return; // quota or offline: try again next visit
         }
-        await new Promise(resolve => setTimeout(resolve, 4000));
+        await new Promise(resolve => setTimeout(resolve, 10_000));
       }
     })();
-    return () => { stopped = true; };
+    // Not cancelled when the cookbook changes: it runs once per visit, and a
+    // cancelled run would not start again until the next one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, cookbookLoading, savedRecipes.length]);
 
