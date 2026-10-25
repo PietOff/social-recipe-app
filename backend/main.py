@@ -1997,6 +1997,129 @@ def translate_recipe(request: TranslateRequest, _rl: None = Depends(rate_limit))
     return result
 
 
+class NutritionIngredient(BaseModel):
+    item: str = ""
+    amount: Optional[str] = ""
+    unit: Optional[str] = ""
+
+
+class NutritionRecipe(BaseModel):
+    id: str
+    title: str = ""
+    servings: Optional[str] = None
+    ingredients: List[NutritionIngredient] = []
+
+
+class NutritionRequest(BaseModel):
+    recipes: List[NutritionRecipe] = []
+
+
+MAX_NUTRITION_BATCH = 8
+MAX_NUTRITION_CHARS = 12000
+
+
+def clean_nutrition(raw: dict) -> Optional[dict]:
+    """Per-serving numbers from the model, or None when they make no sense.
+
+    The model sometimes gets the calories wrong while the macros are right (or
+    the other way round). Calories are recomputed from the macros (4/4/9 kcal
+    per gram) when the two disagree by more than a third, since three grams
+    are harder to get wrong than one sum.
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    def num(key: str, high: float) -> Optional[float]:
+        try:
+            v = float(raw.get(key))
+        except (TypeError, ValueError):
+            return None
+        return v if 0 <= v <= high else None
+
+    protein, carbs, fat = num("protein", 400), num("carbs", 600), num("fat", 300)
+    kcal = num("kcal", 5000)
+    if protein is None or carbs is None or fat is None:
+        return None
+    from_macros = protein * 4 + carbs * 4 + fat * 9
+    if from_macros <= 0:
+        return None
+    if kcal is None or abs(kcal - from_macros) > from_macros / 3:
+        kcal = from_macros
+    servings = num("servings", 100)
+    return {
+        "kcal": int(round(kcal / 10) * 10),
+        "protein": int(round(protein)),
+        "carbs": int(round(carbs)),
+        "fat": int(round(fat)),
+        "servings": int(round(servings)) if servings else None,
+    }
+
+
+def _nutrition_prompt(recipes: List[dict]) -> str:
+    listing = json.dumps(recipes, ensure_ascii=False)
+    return f"""Estimate the nutrition PER SERVING for each recipe below, from its ingredients and amounts.
+
+RULES:
+1. Use standard nutrition values for the raw ingredients; count oil, butter, sugar and sauces.
+2. Divide by the number of servings given. If "servings" is missing or unclear, decide a sensible number of servings for the amounts and report it.
+3. Ingredients without an amount ("to taste", garnish) count as a small amount.
+4. Round: kcal to 10, grams to whole numbers.
+5. Return ONLY JSON: {{"results": [{{"id": "<id as given>", "servings": <number>, "kcal": <number>, "protein": <grams>, "carbs": <grams>, "fat": <grams>}}]}}
+
+Recipes:
+{listing}
+"""
+
+
+@app.post("/estimate-nutrition")
+def estimate_nutrition(request: NutritionRequest, _rl: None = Depends(rate_limit)):
+    if not (os.getenv("GEMINI_API_KEY") or os.getenv("GROQ_API_KEY")):
+        raise HTTPException(status_code=503, detail="No LLM provider configured on the server.")
+    if len(request.recipes) > MAX_NUTRITION_BATCH:
+        raise HTTPException(status_code=413, detail="Too many recipes in one request.")
+    recipes = [
+        {
+            "id": r.id,
+            "title": r.title[:120],
+            "servings": (r.servings or "")[:40] or None,
+            "ingredients": [
+                " ".join(x for x in [(i.amount or "").strip(), (i.unit or "").strip(), i.item.strip()] if x)[:120]
+                for i in r.ingredients[:40] if i.item.strip()
+            ],
+        }
+        for r in request.recipes
+    ]
+    recipes = [r for r in recipes if r["ingredients"]]
+    if not recipes:
+        return {"results": []}
+    if len(json.dumps(recipes, ensure_ascii=False)) > MAX_NUTRITION_CHARS:
+        raise HTTPException(status_code=413, detail="These recipes are too long to estimate at once.")
+    try:
+        data = generate_json(
+            _nutrition_prompt(recipes),
+            "You are a JSON-only API and a careful nutritionist. Return a valid JSON object and nothing else.",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_if_quota(e)
+        logger.error(f"Nutrition estimate failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="The recipe AI is unavailable right now. Please try again in a moment.",
+        )
+    wanted = {r["id"] for r in recipes}
+    results = []
+    for item in (data.get("results") if isinstance(data, dict) else None) or []:
+        if not isinstance(item, dict) or item.get("id") not in wanted:
+            continue
+        cleaned = clean_nutrition(item)
+        if cleaned:
+            results.append({"id": item["id"], **cleaned})
+            wanted.discard(item["id"])
+    return {"results": results}
+
+
 @app.post("/extract-recipe")
 def extract_recipe(request: ExtractRequest, _rl: None = Depends(rate_limit)):
     if not is_platform_url(request.url) and website.is_web_url(request.url):

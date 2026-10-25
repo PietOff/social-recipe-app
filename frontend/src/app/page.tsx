@@ -64,6 +64,9 @@ import { exportRecipesToPdf } from '../lib/printExport';
 import { getStrings, labelText, preferredLang, useLang } from '../lib/i18n';
 import { displayQuantity } from '../lib/quantity';
 import { scaleSteps } from '../lib/steps';
+import { hasCurrentNutrition, needsNutrition } from '../lib/nutrition';
+import { fetchNutrition, NUTRITION_BATCH } from '../lib/nutritionApi';
+import { Nutrition } from '../types';
 import { asEdited, fetchTranslation, localized, needsTranslation, withTranslation } from '../lib/translate';
 import { matchesQuery, searchableText } from '../lib/search';
 import { localizeError } from '../lib/errors';
@@ -219,6 +222,7 @@ function HomeContent() {
           created_at: typeof data.created_at === 'number' ? data.created_at : undefined,
           language: data.language === 'nl' || data.language === 'en' ? data.language : undefined,
           translations: data.translations || undefined,
+          nutrition: data.nutrition || undefined,
         });
       });
       // An empty result is only trustworthy when it came from the server AND we
@@ -773,6 +777,72 @@ function HomeContent() {
     // cookbook update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recipe && recipeKey(recipe), lang, Boolean(recipe && needsTranslation(recipe, lang))]);
+
+  // --- Nutrition per serving (lib/nutrition.ts): estimated once per recipe,
+  // kept on the recipe and in the cloud.
+  const applyNutrition = React.useCallback((found: Map<string, Nutrition>) => {
+    if (found.size === 0) return;
+    const withN = (r: Recipe): Recipe => {
+      const n = found.get(recipeKey(r));
+      return n ? { ...r, nutrition: n } : r;
+    };
+    setRecipe(cur => (cur ? withN(cur) : cur));
+    setSavedRecipes(prev => {
+      const next = prev.map(withN);
+      try {
+        localStorage.setItem(user ? 'chefSocial_cached_cookbook' : 'chefSocial_cookbook', JSON.stringify(next));
+      } catch { /* quota */ }
+      if (user) {
+        next.forEach((r, i) => {
+          if (r !== prev[i] && r.id) {
+            updateRecipeInCloud(user.id, r).catch(e => console.warn('Saving nutrition failed', e));
+          }
+        });
+      }
+      return next;
+    });
+  }, [user]);
+
+  const [estimatingNutrition, setEstimatingNutrition] = useState(false);
+  const nutritionAttempted = React.useRef(new Set<string>());
+  React.useEffect(() => {
+    if (!recipe || !needsNutrition(recipe)) return;
+    const key = `${recipeKey(recipe)}|${recipe.servings || ''}|${(recipe.ingredients || []).length}`;
+    if (nutritionAttempted.current.has(key)) return;
+    nutritionAttempted.current.add(key);
+    setEstimatingNutrition(true);
+    fetchNutrition([recipe])
+      .then(applyNutrition)
+      .catch(e => console.warn('Nutrition estimate failed', e))
+      .finally(() => setEstimatingNutrition(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recipe && recipeKey(recipe), recipe && needsNutrition(recipe)]);
+
+  // Fill in the rest of the cookbook quietly, a few batches per visit so the
+  // AI's free quota is never used up in one go.
+  const nutritionBackfillStarted = React.useRef(false);
+  React.useEffect(() => {
+    // Signed in only: the estimates are saved to the cloud, and the cookbook
+    // must have finished loading from it first.
+    if (nutritionBackfillStarted.current || !user || cookbookLoading || savedRecipes.length === 0) return;
+    nutritionBackfillStarted.current = true;
+    const queue = savedRecipes.filter(needsNutrition).slice(0, NUTRITION_BATCH * 10);
+    if (queue.length === 0) return;
+    let stopped = false;
+    void (async () => {
+      for (let i = 0; i < queue.length && !stopped; i += NUTRITION_BATCH) {
+        try {
+          applyNutrition(await fetchNutrition(queue.slice(i, i + NUTRITION_BATCH)));
+        } catch (e) {
+          console.warn('Nutrition backfill paused', e);
+          return; // quota or offline: try again next visit
+        }
+        await new Promise(resolve => setTimeout(resolve, 4000));
+      }
+    })();
+    return () => { stopped = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, cookbookLoading, savedRecipes.length]);
 
   // --- Cooking mode: step by step, screen kept on, timers.
   const [cooking, setCooking] = useState(false);
@@ -1555,6 +1625,18 @@ function HomeContent() {
                     <div className={styles.metaItem}>🔥 {shownRecipe?.cook_time || '--'}</div>
                     <div className={styles.metaItem}>👥 {displayRecipe?.servings || '--'}</div>
                   </div>
+                  {recipe && hasCurrentNutrition(recipe) && recipe.nutrition ? (
+                    <p className={styles.nutritionLine}>
+                      {t.nutritionEstimate(recipe.nutrition.kcal, recipe.nutrition.protein, recipe.nutrition.carbs, recipe.nutrition.fat)}{' '}
+                      <span>
+                        {t.perServing} ({!baseServings && recipe.nutrition.servings
+                          ? t.nutritionAssumed(recipe.nutrition.servings)
+                          : t.nutritionNote})
+                      </span>
+                    </p>
+                  ) : estimatingNutrition ? (
+                    <p className={styles.nutritionLine}><span>{t.estimatingNutrition}</span></p>
+                  ) : null}
 
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center', justifyContent: 'space-between', margin: '0 0 1rem' }}>
                     <ServingsStepper base={baseServings} value={servingsTarget} onChange={setServingsTarget} />

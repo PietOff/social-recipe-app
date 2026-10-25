@@ -197,6 +197,7 @@ export function toFirestoreDoc(uid: string, recipe: Recipe) {
     created_at: recipe.created_at || Date.now(),
     language: recipe.language || null,
     translations: recipe.translations || null,
+    nutrition: recipe.nutrition || null,
   };
 }
 
