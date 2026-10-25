@@ -131,6 +131,26 @@ const SYNONYM_GROUPS: string[][] = [
   ['baked', 'baking', 'bake', 'bakken', 'gebakken'],
   ['slow cooker', 'slowcooker', 'crockpot'],
   ['one pan', 'one pot', 'een pan', 'traybake'],
+
+  // Cuisines: every way to name one, so "mexico" finds the "Mexican" label
+  // that lib/labels.ts derives from the dish (a burrito never says "Mexican").
+  ['mexican', 'mexicaans', 'mexicaanse', 'mexico', 'tex mex', 'texmex'],
+  ['italian', 'italiaans', 'italiaanse', 'italie', 'italy'],
+  ['chinese', 'chinees', 'china'],
+  ['japanese', 'japans', 'japanse', 'japan'],
+  ['korean', 'koreaans', 'koreaanse', 'korea'],
+  ['thai', 'thais', 'thaise', 'thailand'],
+  ['vietnamese', 'vietnamees', 'vietnam'],
+  ['indian', 'indiaas', 'indiase', 'india'],
+  ['indonesian', 'indonesisch', 'indonesische', 'indonesie', 'indisch', 'indische'],
+  ['middle eastern', 'midden oosters', 'midden oosterse', 'midden oosten', 'libanees', 'lebanese'],
+  ['turkish', 'turks', 'turkse', 'turkije'],
+  ['greek', 'grieks', 'griekse', 'griekenland', 'greece'],
+  ['moroccan', 'marokkaans', 'marokkaanse', 'marokko', 'morocco'],
+  ['spanish', 'spaans', 'spaanse', 'spanje', 'spain'],
+  ['french', 'frans', 'franse', 'frankrijk', 'france'],
+  ['dutch', 'hollands', 'hollandse', 'nederlands', 'nederlandse', 'oudhollands'],
+  ['american', 'amerikaans', 'amerikaanse', 'usa', 'amerika'],
 ];
 
 const GROUPS_BY_WORD: Map<string, string[]> = (() => {

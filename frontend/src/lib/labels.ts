@@ -12,7 +12,7 @@ import { normalize, startsWord } from './text';
  * cookbook without re-extracting anything.
  */
 
-export type LabelKind = 'time' | 'protein' | 'method' | 'effort' | 'tag';
+export type LabelKind = 'time' | 'protein' | 'method' | 'effort' | 'cuisine' | 'tag';
 
 /** Case-, hyphen- and spacing-insensitive key: the extractor's "One-Pan" tag and
  *  the derived "One pan" label are the same label, not two chips. */
@@ -141,6 +141,122 @@ function matchFirst(text: string, table: Array<[string, string[]]>): string | nu
   return null;
 }
 
+/**
+ * Cuisines, recognised from what a recipe is rather than from a tag: nobody
+ * writes "Mexican" on a burrito, so a search for "mexico" found nothing.
+ *
+ * `names` are the cuisine named outright ("Mexican", "Mexicaans"); `dishes` are
+ * dishes that belong to it; `markers` are ingredients that only show up in it.
+ * Names and dishes are read from the title, description and tags; markers from
+ * the ingredients. Generic things that cross cuisines (tortilla wraps, salsa,
+ * pasta salad, curry, soy sauce) are left out on purpose.
+ */
+interface Cuisine { label: string; names: string[]; dishes: string[]; markers: string[] }
+
+const CUISINES: Cuisine[] = [
+  { label: 'Mexican', names: ['mexican', 'mexicaans', 'mexicaanse', 'mexico', 'tex mex'],
+    dishes: ['burrito', 'taco', 'tacos', 'quesadilla', 'enchilada', 'fajita', 'nacho', 'guacamole',
+      'chimichanga', 'tostada', 'tamale', 'pozole', 'elote', 'chili con carne', 'carnitas', 'birria',
+      'mole', 'huevos rancheros', 'pico de gallo', 'al pastor', 'barbacoa', 'chilaquiles'],
+    markers: ['chipotle', 'jalapeno', 'taco seasoning', 'tacokruiden', 'fajitakruiden', 'tomatillo',
+      'cotija', 'queso fresco', 'enchilada sauce'] },
+  { label: 'Italian', names: ['italian', 'italiaans', 'italiaanse', 'italie'],
+    dishes: ['pizza', 'risotto', 'lasagna', 'lasagne', 'carbonara', 'bolognese', 'gnocchi', 'pesto',
+      'tiramisu', 'focaccia', 'arancini', 'ossobuco', 'parmigiana', 'saltimbocca', 'cacio e pepe',
+      'ragu', 'panna cotta', 'bruschetta', 'cannelloni', 'ravioli', 'tortellini', 'puttanesca',
+      'arrabbiata', 'amatriciana', 'aglio e olio', 'minestrone', 'caprese', 'piccata', 'scaloppine'],
+    markers: ['mascarpone', 'guanciale'] },
+  { label: 'Chinese', names: ['chinese', 'chinees', 'china'],
+    dishes: ['dim sum', 'kung pao', 'char siu', 'chow mein', 'mapo tofu', 'sweet and sour', 'zoetzuur',
+      'peking', 'szechuan', 'sichuan', 'wonton', 'lo mein', 'general tso', 'bao', 'baozi',
+      'babi pangang', 'foe yong hai', 'tjap tjoy', 'chop suey', 'egg fried rice'],
+    markers: ['shaoxing', 'doubanjiang', 'five spice', 'vijfkruidenpoeder', 'sichuan pepper'] },
+  { label: 'Japanese', names: ['japanese', 'japans', 'japanse', 'japan'],
+    dishes: ['sushi', 'ramen', 'teriyaki', 'gyoza', 'katsu', 'tempura', 'udon', 'onigiri', 'yakitori',
+      'okonomiyaki', 'donburi', 'karaage', 'tonkatsu', 'yakisoba', 'miso soup', 'misosoep'],
+    markers: ['mirin', 'dashi', 'nori', 'furikake'] },
+  { label: 'Korean', names: ['korean', 'koreaans', 'koreaanse', 'korea'],
+    dishes: ['kimchi', 'bibimbap', 'bulgogi', 'tteokbokki', 'japchae', 'korean fried chicken'],
+    markers: ['gochujang', 'gochugaru'] },
+  { label: 'Thai', names: ['thai', 'thais', 'thaise', 'thailand'],
+    dishes: ['pad thai', 'tom yum', 'tom kha', 'green curry', 'groene curry', 'red curry', 'rode curry',
+      'massaman', 'larb', 'pad kra pao', 'panang', 'khao pad'],
+    markers: ['thai basil', 'thaise basilicum', 'thai curry paste', 'thaise currypasta'] },
+  { label: 'Vietnamese', names: ['vietnamese', 'vietnamees', 'vietnam'],
+    dishes: ['pho', 'banh mi', 'bun cha', 'bun bo'], markers: [] },
+  { label: 'Indian', names: ['indian', 'indiaas', 'indiase', 'india'],
+    dishes: ['tikka', 'masala', 'korma', 'dal', 'dahl', 'daal', 'biryani', 'naan', 'butter chicken',
+      'vindaloo', 'paneer', 'samosa', 'chana', 'aloo', 'tandoori', 'rogan josh', 'saag', 'pakora',
+      'bhaji', 'jalfrezi', 'madras', 'dhal', 'raita', 'chapati'],
+    markers: ['garam masala'] },
+  { label: 'Indonesian', names: ['indonesian', 'indonesisch', 'indonesische', 'indisch', 'indische'],
+    dishes: ['nasi', 'bami', 'rendang', 'sate', 'satay', 'saté', 'gado gado', 'ayam', 'babi ketjap',
+      'opor', 'soto', 'rijsttafel', 'lumpia', 'loempia', 'atjar', 'seroendeng'],
+    markers: ['sambal', 'boemboe', 'bumbu', 'ketjap manis', 'kecap manis', 'trassi', 'sereh', 'djahe', 'laos'] },
+  { label: 'Middle Eastern', names: ['middle eastern', 'midden oosters', 'midden oosterse', 'lebanese', 'libanees', 'israeli'],
+    dishes: ['shakshuka', 'hummus', 'falafel', 'shawarma', 'tabbouleh', 'baba ganoush', 'labneh',
+      'fattoush', 'manakish', 'mezze', 'meze', 'musakhan', 'mujadara'],
+    markers: ['tahini', 'tahin', 'zaatar', 'sumac', 'sumak'] },
+  { label: 'Turkish', names: ['turkish', 'turks', 'turkse', 'turkije'],
+    dishes: ['kebab', 'doner', 'lahmacun', 'pide', 'borek', 'kofte', 'menemen', 'iskender', 'manti', 'baklava'],
+    markers: ['pul biber'] },
+  { label: 'Greek', names: ['greek', 'grieks', 'griekse', 'griekenland'],
+    dishes: ['gyros', 'souvlaki', 'tzatziki', 'moussaka', 'spanakopita', 'pastitsio', 'stifado',
+      'kleftiko', 'dolmades', 'horiatiki', 'greek salad'], markers: [] },
+  { label: 'Moroccan', names: ['moroccan', 'marokkaans', 'marokkaanse', 'marokko', 'north african', 'noord afrikaans'],
+    dishes: ['tagine', 'tajine', 'couscous', 'harira', 'pastilla', 'msemen', 'zaalouk'],
+    markers: ['ras el hanout', 'harissa', 'preserved lemon'] },
+  { label: 'Spanish', names: ['spanish', 'spaans', 'spaanse', 'spanje'],
+    dishes: ['paella', 'tapas', 'patatas bravas', 'gazpacho', 'croquetas', 'tortilla espanola',
+      'tortilla de patatas', 'albondigas', 'gambas al ajillo', 'pimientos de padron', 'salmorejo', 'churros'],
+    markers: [] },
+  { label: 'French', names: ['french', 'frans', 'franse', 'frankrijk'],
+    dishes: ['ratatouille', 'quiche', 'croque', 'coq au vin', 'bourguignon', 'crepe', 'souffle',
+      'tarte tatin', 'gratin dauphinois', 'bouillabaisse', 'cassoulet', 'beurre blanc',
+      'bearnaise', 'nicoise', 'clafoutis', 'creme brulee', 'tartiflette', 'croissant', 'galette'],
+    markers: ['gruyere', 'herbes de provence'] },
+  { label: 'Dutch', names: ['dutch', 'hollands', 'hollandse', 'nederlands', 'nederlandse', 'brabants', 'brabantse'],
+    dishes: ['stamppot', 'hutspot', 'erwtensoep', 'snert', 'bitterbal', 'kroket', 'poffertjes', 'hachee',
+      'zuurkool', 'boerenkool', 'worstenbrood', 'oliebol', 'appeltaart', 'draadjesvlees', 'kapsalon',
+      'pannenkoek', 'stroopwafel', 'speculaas', 'balkenbrij', 'andijviestamppot', 'jachtschotel'],
+    markers: ['rookworst'] },
+  { label: 'American', names: ['american', 'amerikaans', 'amerikaanse', 'southern'],
+    dishes: ['mac and cheese', 'mac n cheese', 'pulled pork', 'sloppy joe', 'buffalo wings', 'cornbread',
+      'philly cheesesteak', 'cheesesteak', 'smash burger', 'smashburger', 'meatloaf', 'pancakes and syrup',
+      'clam chowder', 'jambalaya', 'gumbo', 'biscuits and gravy', 'chicken and waffles'],
+    markers: [] },
+];
+
+/** Short names ("dal", "pho", "sate") only as a whole word, so "photo",
+ *  "dalgona" and "saten" stay out; longer ones also catch plurals and
+ *  compounds ("burritos", "tikkamasala"). */
+function hasTerm(text: string, term: string): boolean {
+  const t = normalize(term);
+  if (t.length <= 4) return new RegExp(`(?:^|[^\\p{L}\\p{N}])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}s?(?![\\p{L}\\p{N}])`, 'u').test(text);
+  return startsWord(text, t);
+}
+
+export function cuisineLabel(recipe: Recipe): string | null {
+  const about = normalize([recipe.title, recipe.description, ...(recipe.tags || []), recipe.category || ''].join(' '));
+  const title = normalize(recipe.title || '');
+  const ingredients = normalize((recipe.ingredients || []).map(i => i?.item || '').join(' '));
+  // Named outright in the title wins ("Korean fried chicken tacos" is Korean),
+  // then a known dish in the title, then anywhere in the description or tags,
+  // then a telltale ingredient.
+  const passes: Array<(c: Cuisine) => boolean> = [
+    c => c.names.some(n => hasTerm(title, n)),
+    c => c.dishes.some(d => hasTerm(title, d)),
+    c => c.names.some(n => hasTerm(about, n)),
+    c => c.dishes.some(d => hasTerm(about, d)),
+    c => c.markers.some(m => hasTerm(ingredients, m)),
+  ];
+  for (const pass of passes) {
+    const hit = CUISINES.find(pass);
+    if (hit) return hit.label;
+  }
+  return null;
+}
+
 function methodLabel(recipe: Recipe): string | null {
   const instructions = normalize((recipe.instructions || []).join(' '));
   return matchFirst(haystack(recipe) + ' ' + instructions, METHOD_TERMS);
@@ -185,6 +301,7 @@ export function recipeLabels(recipe: Recipe): Label[] {
     [timeLabel(recipe), 'time'],
     [proteinLabel(recipe), 'protein'],
     [methodLabel(recipe), 'method'],
+    [cuisineLabel(recipe), 'cuisine'],
   ];
   for (const [value, kind] of derived) {
     if (value) labels.push({ value, kind });
