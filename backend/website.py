@@ -5,6 +5,12 @@ blogs on WordPress recipe plugins...) embed the recipe as schema.org JSON-LD
 for Google's rich results. That is read first: it is exact, cheap and does not
 depend on the page layout. Pages without it fall back to their visible text.
 
+Some sites serve servers in data centres (Render included) a stripped or
+challenge page without the recipe, while the same request from elsewhere gets
+the full page. When the direct fetch has no structured recipe, or is refused,
+the page is fetched once more through a public reader service, and its copy is
+used when it does carry the recipe.
+
 Fetching an arbitrary user-supplied URL from the server is an SSRF risk, so
 every hop is checked: http(s) only, standard ports, and the host must resolve
 to public addresses only. Redirects are followed by hand so each target is
@@ -13,6 +19,7 @@ checked too.
 import html as html_lib
 import ipaddress
 import json
+import logging
 import re
 import socket
 from typing import Iterable, List, Optional, Tuple
@@ -24,6 +31,10 @@ MAX_PAGE_BYTES = 4 * 1024 * 1024
 MAX_REDIRECTS = 5
 MAX_TEXT_CHARS = 15000
 FETCH_TIMEOUT = 12
+READER_URL = "https://r.jina.ai/"
+READER_TIMEOUT = 25
+
+logger = logging.getLogger(__name__)
 
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -38,9 +49,11 @@ BROWSER_HEADERS = {
 class WebsiteError(Exception):
     """A user-facing failure. `status` is the HTTP status to answer with."""
 
-    def __init__(self, message: str, status: int = 400):
+    def __init__(self, message: str, status: int = 400, blocked: bool = False):
         super().__init__(message)
         self.status = status
+        # The site answered but refused us; another route may still work.
+        self.blocked = blocked
 
 
 # --- URL safety ------------------------------------------------------------
@@ -130,7 +143,8 @@ def fetch_page(url: str, session: Optional[requests.Session] = None) -> Tuple[st
                 current = urljoin(current, resp.headers["Location"])
                 continue
             if resp.status_code in (401, 403, 429, 503):
-                raise WebsiteError("This website blocks automatic access. Try another recipe site.")
+                raise WebsiteError("This website blocks automatic access. Try another recipe site.",
+                                   blocked=True)
             if resp.status_code != 200:
                 raise WebsiteError(f"Could not open this website (status {resp.status_code}).")
             content_type = (resp.headers.get("Content-Type") or "").lower()
@@ -349,12 +363,67 @@ def page_title(page: str) -> str:
     return title
 
 
+def fetch_via_reader(url: str) -> Optional[str]:
+    """The page's HTML as fetched by the reader service, or None.
+
+    The reader loads the page from its own network, so it gets the full page
+    when a site serves data-centre addresses a stripped one. Only public URLs
+    that already passed assert_public_url are sent.
+    """
+    try:
+        resp = requests.get(
+            READER_URL + url,
+            headers={"X-Return-Format": "html", "Accept": "text/html"},
+            timeout=READER_TIMEOUT, stream=True)
+    except requests.RequestException as e:
+        logger.info(f"Reader fetch failed for {url}: {e}")
+        return None
+    try:
+        if resp.status_code != 200:
+            logger.info(f"Reader fetch for {url} answered {resp.status_code}")
+            return None
+        body = b""
+        for chunk in resp.iter_content(chunk_size=65536):
+            body += chunk
+            if len(body) > MAX_PAGE_BYTES:
+                break
+        return body.decode("utf-8", errors="replace")
+    except requests.RequestException:
+        return None
+    finally:
+        resp.close()
+
+
+def _structured(page: str) -> Optional[dict]:
+    recipe = find_recipe_jsonld(page) if page else None
+    if recipe and _as_list(recipe.get("recipeIngredient") or recipe.get("ingredients")):
+        return recipe
+    return None
+
+
 def extract_website(url: str, session: Optional[requests.Session] = None) -> dict:
     """Fetches a recipe page. Returns {raw_text, image, final_url, structured}."""
-    final_url, page = fetch_page(url, session)
+    blocked: Optional[WebsiteError] = None
+    try:
+        final_url, page = fetch_page(url, session)
+    except WebsiteError as e:
+        if not e.blocked:
+            raise
+        blocked, final_url, page = e, url, ""
+    recipe = _structured(page)
+    if not recipe:
+        logger.info(f"No structured recipe in direct fetch of {final_url} "
+                    f"({'blocked' if blocked else f'{len(page)} chars, title {page_title(page)!r}'}); trying reader")
+        alt = fetch_via_reader(final_url)
+        alt_recipe = _structured(alt or "")
+        if alt_recipe:
+            page, recipe = alt, alt_recipe
+        elif blocked:
+            if not alt:
+                raise blocked
+            page = alt
     image = _meta(page, "og:image", "og:image:url", "twitter:image")
-    recipe = find_recipe_jsonld(page)
-    if recipe and _as_list(recipe.get("recipeIngredient") or recipe.get("ingredients")):
+    if recipe:
         return {
             "raw_text": recipe_jsonld_to_text(recipe),
             "image": _image(recipe.get("image"), final_url) or _absolute_http(image, final_url),
