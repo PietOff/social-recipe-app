@@ -3,6 +3,28 @@ import { displayQuantity, localUnit, prettyAmount } from '../quantity';
 import { aggregate, addEntry, EMPTY_LIST } from '../shopping';
 
 describe('displayQuantity', () => {
+  it('shows small ml amounts as spoons', () => {
+    expect(displayQuantity({ amount: '10', unit: 'ml', item: 'zout' }, 'nl')).toBe('2 tl');
+    expect(displayQuantity({ amount: '2.5', unit: 'ml' }, 'nl')).toBe('½ tl');
+    expect(displayQuantity({ amount: '5', unit: 'ml' }, 'en')).toBe('1 tsp');
+    expect(displayQuantity({ amount: '7,5', unit: 'ml' }, 'nl')).toBe('1½ tl');
+    expect(displayQuantity({ amount: '15', unit: 'ml' }, 'nl')).toBe('1 el');
+    expect(displayQuantity({ amount: '45', unit: 'ml' }, 'nl')).toBe('3 el');
+    expect(displayQuantity({ amount: '20', unit: 'ml' }, 'nl')).toBe('20 ml');
+    expect(displayQuantity({ amount: '125', unit: 'ml' }, 'nl')).toBe('125 ml');
+  });
+
+  it('reads a bare "1" for salt or pepper as to taste, but not for a chili', () => {
+    expect(displayQuantity({ amount: '1', unit: '', item: 'zout' }, 'nl')).toBe('naar smaak');
+    expect(displayQuantity({ amount: '1', unit: '', item: 'Peper' }, 'nl')).toBe('naar smaak');
+    expect(displayQuantity({ amount: '1', unit: '', item: 'zwarte peper' }, 'nl')).toBe('naar smaak');
+    expect(displayQuantity({ amount: '1', unit: '', item: 'freshly ground black pepper' }, 'en')).toBe('to taste');
+    expect(displayQuantity({ amount: '1', unit: '', item: 'zout en peper' }, 'nl')).toBe('naar smaak');
+    expect(displayQuantity({ amount: '1', unit: '', item: 'rode peper' }, 'nl')).toBe('1');
+    expect(displayQuantity({ amount: '1', unit: 'tl', item: 'zout' }, 'nl')).toBe('1 tl');
+    expect(displayQuantity({ amount: '2', unit: '', item: 'zout' }, 'nl')).toBe('2');
+  });
+
   it('writes small decimals and slash fractions as fractions', () => {
     expect(displayQuantity({ amount: '0.5', unit: 'teaspoon' }, 'nl')).toBe('½ tl');
     expect(displayQuantity({ amount: '1.5', unit: 'tbsp' }, 'en')).toBe('1½ tbsp');
