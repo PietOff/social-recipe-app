@@ -106,6 +106,9 @@ class FetchTests(unittest.TestCase):
         patcher = mock.patch("socket.getaddrinfo", side_effect=self.resolve)
         patcher.start()
         self.addCleanup(patcher.stop)
+        reader = mock.patch.object(website, "fetch_via_reader", return_value=None)
+        self.reader = reader.start()
+        self.addCleanup(reader.stop)
 
     @staticmethod
     def resolve(host, *_):
@@ -152,6 +155,60 @@ class FetchTests(unittest.TestCase):
         session.get.return_value = FakeResponse(200, {"Content-Type": "application/pdf"})
         with self.assertRaisesRegex(website.WebsiteError, "not a web page"):
             website.fetch_page("https://example.com/r.pdf", session)
+
+    def test_structured_direct_fetch_does_not_use_reader(self):
+        session = mock.Mock()
+        session.get.return_value = FakeResponse(200, {"Content-Type": "text/html"}, GRAPH_PAGE.encode())
+        website.extract_website("https://example.com/r", session)
+        self.reader.assert_not_called()
+
+    def test_stripped_page_uses_reader_copy_with_recipe(self):
+        session = mock.Mock()
+        session.get.return_value = FakeResponse(
+            200, {"Content-Type": "text/html"}, b"<html><title>Just a moment...</title></html>")
+        self.reader.return_value = GRAPH_PAGE
+        page = website.extract_website("https://example.com/r", session)
+        self.assertTrue(page["structured"])
+        self.assertIn("500 g boerenkool", page["raw_text"])
+        self.reader.assert_called_once_with("https://example.com/r")
+
+    def test_reader_without_recipe_keeps_direct_page_text(self):
+        body = "<html><title>Appeltaart</title><body><p>200 g boter</p></body></html>"
+        session = mock.Mock()
+        session.get.return_value = FakeResponse(200, {"Content-Type": "text/html"}, body.encode())
+        self.reader.return_value = "<html><title>Other</title><body>nothing</body></html>"
+        page = website.extract_website("https://example.com/r", session)
+        self.assertFalse(page["structured"])
+        self.assertIn("200 g boter", page["raw_text"])
+
+    def test_blocked_site_falls_back_to_reader(self):
+        session = mock.Mock()
+        session.get.return_value = FakeResponse(403)
+        self.reader.return_value = GRAPH_PAGE
+        self.assertTrue(website.extract_website("https://example.com/r", session)["structured"])
+        self.reader.return_value = None
+        with self.assertRaisesRegex(website.WebsiteError, "blocks"):
+            website.extract_website("https://example.com/r", session)
+
+    def test_other_errors_do_not_use_reader(self):
+        session = mock.Mock()
+        session.get.return_value = FakeResponse(404)
+        with self.assertRaisesRegex(website.WebsiteError, "404"):
+            website.extract_website("https://example.com/r", session)
+        self.reader.assert_not_called()
+
+
+class ReaderTests(unittest.TestCase):
+    def test_reader_request_and_failures(self):
+        ok = FakeResponse(200, {}, b"<html>hi</html>")
+        with mock.patch.object(website.requests, "get", return_value=ok) as get:
+            self.assertEqual(website.fetch_via_reader("https://example.com/r"), "<html>hi</html>")
+            self.assertEqual(get.call_args[0][0], "https://r.jina.ai/https://example.com/r")
+            self.assertEqual(get.call_args[1]["headers"]["X-Return-Format"], "html")
+        with mock.patch.object(website.requests, "get", return_value=FakeResponse(451)):
+            self.assertIsNone(website.fetch_via_reader("https://example.com/r"))
+        with mock.patch.object(website.requests, "get", side_effect=website.requests.ConnectionError()):
+            self.assertIsNone(website.fetch_via_reader("https://example.com/r"))
 
 
 if __name__ == "__main__":
