@@ -64,6 +64,7 @@ import { exportRecipesToPdf } from '../lib/printExport';
 import { getStrings, labelText, preferredLang, useLang } from '../lib/i18n';
 import { displayQuantity } from '../lib/quantity';
 import { scaleSteps } from '../lib/steps';
+import { pantryMatches } from '../lib/pantry';
 import { hasCurrentNutrition, needsNutrition } from '../lib/nutrition';
 import { fetchNutrition, NUTRITION_BATCH } from '../lib/nutritionApi';
 import { Nutrition } from '../types';
@@ -996,6 +997,13 @@ function HomeContent() {
   // --- "What am I feeling like?" ---
   const [selectedMoods, setSelectedMoods] = useState<Set<string>>(new Set());
   const [moodText, setMoodText] = useState('');
+  // "What can I make with..." (lib/pantry.ts), next to the mood suggestions.
+  const [suggestMode, setSuggestMode] = useState<'mood' | 'pantry'>('mood');
+  const [pantryText, setPantryText] = useState('');
+  const pantryResults = React.useMemo(
+    () => (suggestMode === 'pantry' ? pantryMatches(savedRecipes, pantryText) : []),
+    [suggestMode, savedRecipes, pantryText],
+  );
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [suggestIntro, setSuggestIntro] = useState('');
   const [suggestConsidered, setSuggestConsidered] = useState<{ considered: number; total: number } | null>(null);
@@ -1707,6 +1715,84 @@ function HomeContent() {
           {/* VIEW: SUGGEST ("what am I feeling like?") */}
           {view === 'suggest' && (
             <div className={styles.cookbookSection}>
+              <div className={styles.modeToggle} role="tablist">
+                <button type="button" role="tab" aria-selected={suggestMode === 'mood'}
+                  className={suggestMode === 'mood' ? styles.modeActive : ''} onClick={() => setSuggestMode('mood')}>
+                  ✨ {t.modeMood}
+                </button>
+                <button type="button" role="tab" aria-selected={suggestMode === 'pantry'}
+                  className={suggestMode === 'pantry' ? styles.modeActive : ''} onClick={() => setSuggestMode('pantry')}>
+                  🧺 {t.modePantry}
+                </button>
+              </div>
+
+              {suggestMode === 'pantry' && (
+                <>
+                  <div className={styles.recipeCard}>
+                    <h2 style={{ margin: 0 }}>{t.pantryTitle}</h2>
+                    <p style={{ opacity: 0.65, fontSize: '0.88rem', margin: '0.35rem 0 1rem' }}>{t.pantryExplainer}</p>
+                    <textarea
+                      className={styles.pantryInput}
+                      rows={3}
+                      placeholder={t.pantryPlaceholder}
+                      value={pantryText}
+                      onChange={e => setPantryText(e.target.value)}
+                    />
+                    {savedRecipes.length === 0 && (
+                      <p style={{ opacity: 0.6, fontSize: '0.88rem', marginTop: '1rem' }}>{t.saveFirst}</p>
+                    )}
+                  </div>
+                  {pantryText.trim() && savedRecipes.length > 0 && pantryResults.length === 0 && (
+                    <p style={{ opacity: 0.6, width: '100%', textAlign: 'center', padding: '2rem' }}>{t.pantryNothing}</p>
+                  )}
+                  <div className={styles.cookbookGrid}>
+                    {pantryResults.map(({ recipe: match, have, missing }) => {
+                      const key = recipeKey(match);
+                      const thumb = thumbnailSrc(match);
+                      return (
+                        <div
+                          key={key}
+                          className={styles.cookbookItem}
+                          onClick={() => {
+                            cookbookScrollY.current = window.scrollY;
+                            setRecipe(match);
+                            setView('details');
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                        >
+                          <div className={styles.cookbookImage}>
+                            {thumb ? (
+                              <img src={thumb} loading="lazy" decoding="async" alt={match.title} referrerPolicy="no-referrer"
+                                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                  const siblingSpan = e.currentTarget.nextElementSibling as HTMLElement;
+                                  if (siblingSpan) siblingSpan.style.display = 'block';
+                                }} />
+                            ) : null}
+                            <span style={{ fontSize: '2rem', display: thumb ? 'none' : 'block' }}>🍳</span>
+                          </div>
+                          <div className={styles.cookbookContent}>
+                            <h4>{localized(match, lang).title}</h4>
+                            <p className={styles.suggestReason}>
+                              {missing.length === 0
+                                ? t.pantryAll
+                                : t.pantryHave(have.length, have.length + missing.length)}
+                            </p>
+                            {missing.length > 0 && (
+                              <p className={styles.pantryMissing}>
+                                {t.pantryMissing} {missing.slice(0, 4).map(i => (i.item || '').split(/[,(]/)[0].trim()).join(', ')}{missing.length > 4 ? ` +${missing.length - 4}` : ''}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              {suggestMode === 'mood' && (<>
               <div className={styles.recipeCard}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem' }}>
                   <h2 style={{ margin: 0 }}>{t.feelingLike}</h2>
@@ -1836,6 +1922,7 @@ function HomeContent() {
                   {t.nothingFits}
                 </p>
               )}
+              </>)}
             </div>
           )}
 
