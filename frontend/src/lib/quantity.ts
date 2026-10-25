@@ -91,6 +91,24 @@ export function localUnit(unit: string | undefined, amount: string | undefined, 
   return names[lang][plural ? 1 : 0];
 }
 
+/**
+ * Small ml amounts the AI converted from spoons, back as spoons:
+ * 2.5 ml -> ½ tl, 10 ml -> 2 tl, 15 ml -> 1 el, 45 ml -> 3 el.
+ * Other ml amounts (20 ml, 100 ml) stay as they are.
+ */
+function spoonsFromMl(value: number): { amount: number; unit: 'tsp' | 'tbsp' } | null {
+  if (value <= 0) return null;
+  if (value <= 10 && Number.isInteger(value / 1.25)) return { amount: value / 5, unit: 'tsp' };
+  if ([15, 30, 45].includes(value)) return { amount: value / 15, unit: 'tbsp' };
+  return null;
+}
+
+const ML_SPELLINGS = new Set(['ml', 'milliliter', 'milliliters', 'millilitre', 'millilitres']);
+
+/** Plain salt or pepper; "1 zout" means the AI had no amount for it. Not "rode peper" (a chili). */
+const SEASONING_RE =
+  /^((fijn|grof|zee|zwarte|witte|versgemalen|gemalen|sea|kosher|table|black|white|ground|freshly ground)\s*)*(zout|peper|salt|pepper)(\s*(en|and|&)\s*((zwarte|black)\s*)?(zout|peper|salt|pepper))?$/i;
+
 function vague(text: string, lang: Lang): string | null {
   for (const [pattern, words] of VAGUE) if (pattern.test(text.trim())) return words[lang];
   return null;
@@ -100,9 +118,24 @@ function vague(text: string, lang: Lang): string | null {
  * The amount and unit as shown: "½ tl", "2 teentjes", "1", "naar smaak".
  * An ingredient with neither amount nor unit reads "naar smaak" / "to taste".
  */
-export function displayQuantity(ing: Pick<Ingredient, 'amount' | 'unit'>, lang: Lang = 'en'): string {
-  const rawAmount = (ing.amount || '').trim();
-  const rawUnit = (ing.unit || '').trim();
+export function displayQuantity(
+  ing: Pick<Ingredient, 'amount' | 'unit'> & { item?: string },
+  lang: Lang = 'en',
+): string {
+  let rawAmount = (ing.amount || '').trim();
+  let rawUnit = (ing.unit || '').trim();
+
+  if (rawAmount === '1' && (!rawUnit || isCountUnit(rawUnit)) && SEASONING_RE.test((ing.item || '').trim())) {
+    return lang === 'nl' ? 'naar smaak' : 'to taste';
+  }
+  if (ML_SPELLINGS.has(rawUnit.toLowerCase())) {
+    const value = plainNumber(rawAmount);
+    const spoons = value === null ? null : spoonsFromMl(value);
+    if (spoons) {
+      rawAmount = String(spoons.amount);
+      rawUnit = spoons.unit;
+    }
+  }
 
   if (!rawAmount) {
     if (!rawUnit || isCountUnit(rawUnit)) return lang === 'nl' ? 'naar smaak' : 'to taste';

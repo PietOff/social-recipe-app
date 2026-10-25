@@ -1329,8 +1329,8 @@ def parse_with_llm(text_data: str, api_key: str, language: str = "en", source: s
         You are an expert chef and data parser. Extract a structured recipe from the text below, {intro}
 
         RULES:
-        1. METRIC units only for weight/volume (ml, l, g, kg). Keep natural counts for discrete items ("3 cloves garlic", "2 eggs"). Never convert countable items to grams. For a plain count leave "unit" empty: {{"item": "egg", "amount": "1", "unit": ""}}; never use "piece", "pcs" or "stuk" as a unit.
-        2. If amounts are missing, use your culinary knowledge to estimate sensible metric amounts. Never leave amount blank if you can infer it.
+        1. METRIC units for weight/volume (ml, l, g, kg); convert cups, ounces and pounds. Keep spoon measures as spoons: use "tsp" and "tbsp" for small amounts (spices, salt, oil, baking powder) and never convert them to ml ("2 tsp salt", not "10 ml salt"). Keep natural counts for discrete items ("3 cloves garlic", "2 eggs"). Never convert countable items to grams. For a plain count leave "unit" empty: {{"item": "egg", "amount": "1", "unit": ""}}; never use "piece", "pcs" or "stuk" as a unit.
+        2. If amounts are missing, use your culinary knowledge to estimate sensible metric amounts. Never leave amount blank if you can infer it. Exception: seasoning added to taste (salt, pepper) with no amount given gets an empty amount and the unit "to taste": {{"item": "pepper", "amount": "", "unit": "to taste"}}; never write a bare "1" for it.
         3. Group ingredients by component when relevant (e.g. "Sauce", "Marinade", "Batter"). Default group is "Main".
         4. Instructions: be detailed and sequential. Expand on implied steps. Aim for a complete cooking guide a beginner could follow.
         5. Tags: assign ALL that apply from:
