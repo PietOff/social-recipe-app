@@ -75,6 +75,7 @@ import {
 import ServingsStepper from '../components/ServingsStepper';
 import RecipeEditor from '../components/RecipeEditor';
 import ShoppingListView from '../components/ShoppingListView';
+import CookingMode from '../components/CookingMode';
 
 interface User {
   id: string;
@@ -772,6 +773,10 @@ function HomeContent() {
     // cookbook update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recipe && recipeKey(recipe), lang, Boolean(recipe && needsTranslation(recipe, lang))]);
+
+  // --- Cooking mode: step by step, screen kept on, timers.
+  const [cooking, setCooking] = useState(false);
+  React.useEffect(() => { setCooking(false); }, [currentRecipeKey]);
 
   // --- Editing a recipe in place.
   const [editing, setEditing] = useState(false);
@@ -1590,6 +1595,11 @@ function HomeContent() {
                     </div>
                     <div className={styles.instructions}>
                       <h3>{t.instructions}</h3>
+                      {(displayRecipe ?? shownRecipe ?? recipe).instructions.length > 0 && (
+                        <button type="button" className={styles.cookButton} onClick={() => setCooking(true)}>
+                          {t.startCooking}
+                        </button>
+                      )}
                       <ol>
                         {(displayRecipe ?? shownRecipe ?? recipe).instructions.map((step, i) => (
                           <li key={i}>{step}</li>
@@ -1597,6 +1607,10 @@ function HomeContent() {
                       </ol>
                     </div>
                   </div>
+
+                  {cooking && (
+                    <CookingMode recipe={displayRecipe ?? shownRecipe ?? recipe} onClose={() => setCooking(false)} />
+                  )}
 
                   <button onClick={() => saveRecipe(recipe)} disabled={savedRecipes.some(r => isSameRecipe(r, recipe))} className={styles.saveButton}>
                     {savedRecipes.some(r => isSameRecipe(r, recipe)) ? t.savedToCookbook : t.saveToCookbook}
