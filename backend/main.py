@@ -2472,9 +2472,35 @@ def thumb_rate_limit(request: Request) -> None:
         raise HTTPException(status_code=429, detail="Too many thumbnail requests.")
 
 
+TIKTOK_EMBED_STATE_RE = re.compile(
+    r'<script id="__FRONTITY_CONNECT_STATE__"[^>]*>(.*?)</script>', re.S)
+
+
+def tiktok_embed_cover(page: str) -> Optional[str]:
+    """The video's cover image from a TikTok embed page (/embed/v2/<id>)."""
+    m = TIKTOK_EMBED_STATE_RE.search(page or "")
+    if not m:
+        return None
+    try:
+        state = json.loads(m.group(1))
+    except ValueError:
+        return None
+    pages = ((state.get("source") or {}).get("data") or {}) if isinstance(state, dict) else {}
+    for entry in pages.values() if isinstance(pages, dict) else []:
+        infos = ((entry or {}).get("videoData") or {}).get("itemInfos") or {} if isinstance(entry, dict) else {}
+        for key in ("covers", "coversOrigin", "coversDynamic"):
+            for url in infos.get(key) or []:
+                if isinstance(url, str) and url.startswith("https://"):
+                    return url
+    return None
+
+
 def resolve_tiktok_thumbnail(video_id: str) -> Optional[str]:
     """oEmbed resolves from the video id alone, so the uploader handle can be a
-    placeholder - which matters because legacy recipes never stored one."""
+    placeholder - which matters because legacy recipes never stored one.
+
+    TikTok's oEmbed stopped returning thumbnail_url in October 2026, so the
+    embed page, which still carries the cover, is the fallback."""
     try:
         r = requests.get(
             "https://www.tiktok.com/oembed",
@@ -2483,9 +2509,24 @@ def resolve_tiktok_thumbnail(video_id: str) -> Optional[str]:
             timeout=8,
         )
         if r.status_code == 200:
-            return r.json().get("thumbnail_url") or None
+            url = r.json().get("thumbnail_url")
+            if url:
+                return url
     except Exception as e:
-        logger.warning(f"Thumbnail resolve failed for {video_id}: {e}")
+        logger.warning(f"Thumbnail oEmbed failed for {video_id}: {e}")
+    try:
+        r = requests.get(
+            f"https://www.tiktok.com/embed/v2/{video_id}",
+            headers={"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                   "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"),
+                     "Accept-Language": "en"},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            return tiktok_embed_cover(r.text)
+        logger.info(f"TikTok embed page for {video_id} answered {r.status_code}")
+    except Exception as e:
+        logger.warning(f"Thumbnail embed fetch failed for {video_id}: {e}")
     return None
 
 

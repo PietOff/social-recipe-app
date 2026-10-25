@@ -105,5 +105,37 @@ class TikTokOEmbedRetryTest(unittest.TestCase):
             self.assertEqual(main.tiktok_oembed(URL, sleep=lambda s: None), {})
 
 
+def embed_page(covers):
+    state = {"source": {"data": {"/embed/v2/1": {"videoData": {
+        "itemInfos": {"covers": covers},
+        "authorInfos": {"covers": ["https://p16.tiktokcdn.com/avatar.jpg"]}}}}}}
+    return ('<html><script id="__FRONTITY_CONNECT_STATE__" type="application/json">'
+            + json.dumps(state) + "</script></html>")
+
+
+class TikTokThumbnailTest(unittest.TestCase):
+    def test_embed_cover_is_the_video_cover_not_the_avatar(self):
+        self.assertEqual(main.tiktok_embed_cover(embed_page(["https://p16.tiktokcdn.com/cover.jpg"])),
+                         "https://p16.tiktokcdn.com/cover.jpg")
+        self.assertIsNone(main.tiktok_embed_cover(embed_page([])))
+        self.assertIsNone(main.tiktok_embed_cover("<html>nothing</html>"))
+
+    def test_oembed_without_thumbnail_falls_back_to_embed_page(self):
+        oembed = mock.Mock(status_code=200)
+        oembed.json.return_value = {"type": "video", "html": "<iframe>"}
+        embed = mock.Mock(status_code=200, text=embed_page(["https://p16.tiktokcdn.com/cover.jpg"]))
+        with mock.patch.object(main.requests, "get", side_effect=[oembed, embed]) as get:
+            self.assertEqual(main.resolve_tiktok_thumbnail("7698055729399254294"),
+                             "https://p16.tiktokcdn.com/cover.jpg")
+        self.assertIn("/embed/v2/7698055729399254294", get.call_args[0][0])
+
+    def test_oembed_thumbnail_still_used_when_present(self):
+        oembed = mock.Mock(status_code=200)
+        oembed.json.return_value = {"thumbnail_url": "https://p16.tiktokcdn.com/o.jpg"}
+        with mock.patch.object(main.requests, "get", return_value=oembed) as get:
+            self.assertEqual(main.resolve_tiktok_thumbnail("1"), "https://p16.tiktokcdn.com/o.jpg")
+        self.assertEqual(get.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
