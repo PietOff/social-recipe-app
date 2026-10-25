@@ -157,8 +157,11 @@ const CUISINES: Cuisine[] = [
   { label: 'Mexican', names: ['mexican', 'mexicaans', 'mexicaanse', 'mexico', 'tex mex'],
     dishes: ['burrito', 'taco', 'tacos', 'quesadilla', 'enchilada', 'fajita', 'nacho', 'guacamole',
       'chimichanga', 'tostada', 'tamale', 'pozole', 'elote', 'chili con carne', 'carnitas', 'birria',
-      'mole', 'huevos rancheros', 'pico de gallo', 'al pastor', 'barbacoa', 'chilaquiles'],
-    markers: ['chipotle', 'jalapeno', 'taco seasoning', 'tacokruiden', 'fajitakruiden', 'tomatillo',
+      'mole', 'huevos rancheros', 'pico de gallo', 'al pastor', 'barbacoa', 'chilaquiles', 'crunchwrap',
+      'crunch wrap supreme', 'taquito'],
+    // Not chipotle or jalapeño: they turn up in Cajun pasta, corn ribs and
+    // breakfast muffins far more often than in anything Mexican.
+    markers: ['taco seasoning', 'tacokruiden', 'fajitakruiden', 'tomatillo',
       'cotija', 'queso fresco', 'enchilada sauce'] },
   { label: 'Italian', names: ['italian', 'italiaans', 'italiaanse', 'italie'],
     dishes: ['pizza', 'risotto', 'lasagna', 'lasagne', 'carbonara', 'bolognese', 'gnocchi', 'pesto',
@@ -174,7 +177,7 @@ const CUISINES: Cuisine[] = [
   { label: 'Japanese', names: ['japanese', 'japans', 'japanse', 'japan'],
     dishes: ['sushi', 'ramen', 'teriyaki', 'gyoza', 'katsu', 'tempura', 'udon', 'onigiri', 'yakitori',
       'okonomiyaki', 'donburi', 'karaage', 'tonkatsu', 'yakisoba', 'miso soup', 'misosoep'],
-    markers: ['mirin', 'dashi', 'nori', 'furikake'] },
+    markers: ['dashi', 'nori', 'furikake'] },
   { label: 'Korean', names: ['korean', 'koreaans', 'koreaanse', 'korea'],
     dishes: ['kimchi', 'bibimbap', 'bulgogi', 'tteokbokki', 'japchae', 'korean fried chicken'],
     markers: ['gochujang', 'gochugaru'] },
@@ -192,7 +195,8 @@ const CUISINES: Cuisine[] = [
   { label: 'Indonesian', names: ['indonesian', 'indonesisch', 'indonesische', 'indisch', 'indische'],
     dishes: ['nasi', 'bami', 'rendang', 'sate', 'satay', 'saté', 'gado gado', 'ayam', 'babi ketjap',
       'opor', 'soto', 'rijsttafel', 'lumpia', 'loempia', 'atjar', 'seroendeng'],
-    markers: ['sambal', 'boemboe', 'bumbu', 'ketjap manis', 'kecap manis', 'trassi', 'sereh', 'djahe', 'laos'] },
+    // Not sambal or ketjap manis: Dutch kitchens put those in everything.
+    markers: ['boemboe', 'bumbu', 'trassi', 'sereh', 'djahe', 'laos'] },
   { label: 'Middle Eastern', names: ['middle eastern', 'midden oosters', 'midden oosterse', 'lebanese', 'libanees', 'israeli'],
     dishes: ['shakshuka', 'hummus', 'falafel', 'shawarma', 'tabbouleh', 'baba ganoush', 'labneh',
       'fattoush', 'manakish', 'mezze', 'meze', 'musakhan', 'mujadara'],
@@ -214,7 +218,7 @@ const CUISINES: Cuisine[] = [
     dishes: ['ratatouille', 'quiche', 'croque', 'coq au vin', 'bourguignon', 'crepe', 'souffle',
       'tarte tatin', 'gratin dauphinois', 'bouillabaisse', 'cassoulet', 'beurre blanc',
       'bearnaise', 'nicoise', 'clafoutis', 'creme brulee', 'tartiflette', 'croissant', 'galette'],
-    markers: ['gruyere', 'herbes de provence'] },
+    markers: ['herbes de provence'] },
   { label: 'Dutch', names: ['dutch', 'hollands', 'hollandse', 'nederlands', 'nederlandse', 'brabants', 'brabantse'],
     dishes: ['stamppot', 'hutspot', 'erwtensoep', 'snert', 'bitterbal', 'kroket', 'poffertjes', 'hachee',
       'zuurkool', 'boerenkool', 'worstenbrood', 'oliebol', 'appeltaart', 'draadjesvlees', 'kapsalon',
@@ -227,6 +231,33 @@ const CUISINES: Cuisine[] = [
     markers: [] },
 ];
 
+/**
+ * Cuisine words that name an ingredient, not a dish: Greek yogurt, French
+ * fries, Italian seasoning, Spanish paprika, American cheese. And "butter
+ * chicken" inside "honey/garlic/cowboy butter chicken", which is not the
+ * Indian dish. These are blanked out before matching.
+ */
+const NOT_A_CUISINE = new RegExp([
+  'italian (?:seasoning|herbs?|kruiden|sausages?|bread|dressing|style seasoning)',
+  'italiaanse (?:kruiden|worst)',
+  'french (?:fries|fried|toast|onion|mustard|dressing|bread|baguette|beans)',
+  'franse (?:frietjes|mosterd|kaas)',
+  'spanish (?:paprika|onions?|chorizo|olives?|rosemary|sea salt|salt)',
+  'spaanse (?:paprika|peper|ui)',
+  'greek (?:yogh?urt|seasoning|style yogh?urt)', 'griekse yogh?urt',
+  'american (?:cheese|mustard)',
+  'chinese (?:five spice|cabbage|leaf|broccoli|chives|sausage)', 'chinese kool',
+  'korean (?:chili flakes|chilli flakes|pepper flakes)',
+  'thai (?:chill?i(?:es|s)?|sweet chill?i)', 'japanese (?:mayo|mayonnaise|cucumber|breadcrumbs|panko)',
+  'mexican (?:seasoning|spices?|cheese|oregano)', 'mexicaanse kruiden',
+  'indian (?:spices?|curry powder)',
+  '(?:honey|garlic|cowboy|lemon|brown|hot honey|hot) butter chicken',
+].map(p => `(?:^|[^\\p{L}\\p{N}])${p}(?![\\p{L}\\p{N}])`).join('|'), 'gu');
+
+function blankIngredientWords(text: string): string {
+  return text.replace(NOT_A_CUISINE, ' ');
+}
+
 /** Short names ("dal", "pho", "sate") only as a whole word, so "photo",
  *  "dalgona" and "saten" stay out; longer ones also catch plurals and
  *  compounds ("burritos", "tikkamasala"). */
@@ -237,17 +268,20 @@ function hasTerm(text: string, term: string): boolean {
 }
 
 export function cuisineLabel(recipe: Recipe): string | null {
-  const about = normalize([recipe.title, recipe.description, ...(recipe.tags || []), recipe.category || ''].join(' '));
-  const title = normalize(recipe.title || '');
+  const about = blankIngredientWords(normalize([recipe.title, recipe.description, ...(recipe.tags || []), recipe.category || ''].join(' ')));
+  // Tags come from a fixed list ("Pizza", "Tacos"), so a dish there is reliable;
+  // a dish mentioned in passing in a description ("great as a pizza base") is not.
+  const titleAndTags = blankIngredientWords(normalize([recipe.title, ...(recipe.tags || []), recipe.category || ''].join(' ')));
+  const title = blankIngredientWords(normalize(recipe.title || ''));
   const ingredients = normalize((recipe.ingredients || []).map(i => i?.item || '').join(' '));
   // Named outright in the title wins ("Korean fried chicken tacos" is Korean),
-  // then a known dish in the title, then anywhere in the description or tags,
-  // then a telltale ingredient.
+  // then a known dish in the title, then the cuisine named in the description
+  // or tags, then a dish in the tags, then a telltale ingredient.
   const passes: Array<(c: Cuisine) => boolean> = [
     c => c.names.some(n => hasTerm(title, n)),
     c => c.dishes.some(d => hasTerm(title, d)),
     c => c.names.some(n => hasTerm(about, n)),
-    c => c.dishes.some(d => hasTerm(about, d)),
+    c => c.dishes.some(d => hasTerm(titleAndTags, d)),
     c => c.markers.some(m => hasTerm(ingredients, m)),
   ];
   for (const pass of passes) {

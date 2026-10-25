@@ -8,7 +8,8 @@ const burrito = recipe('Chicken Burrito Bowl', ['chicken', 'rice', 'black beans'
 const burritos = recipe('Beef Burritos', ['minced beef', 'tortilla wraps']);
 const tacos = recipe('Crispy Fish Tacos', ['cod', 'cabbage']);
 const quesadilla = recipe('Kip quesadilla', ['kipfilet', 'kaas', 'tortilla']);
-const chipotle = recipe('Smoky chicken bowl', ['chicken', 'chipotle in adobo', 'rice']);
+const tacoSeasoning = recipe('Smoky chicken bowl', ['chicken', 'taco seasoning', 'rice']);
+const chipotlePasta = recipe('Cajun Chicken Pasta', ['penne', 'jalapenos', 'chipotle chili powder']);
 const carbonara = recipe('Spaghetti Carbonara', ['spaghetti', 'guanciale', 'egg']);
 const wrap = recipe('Hummus veggie wrap', ['tortilla wrap', 'hummus', 'cucumber']);
 const plainWrap = recipe('Chicken Caesar wrap', ['tortilla wrap', 'chicken', 'lettuce']);
@@ -22,7 +23,7 @@ const worstenbroodjes = recipe('Brabantse worstenbroodjes', ['bloem', 'gehakt'])
 
 describe('cuisineLabel', () => {
   it('recognises Mexican dishes that never say "Mexican"', () => {
-    for (const r of [burrito, burritos, tacos, quesadilla, chipotle]) {
+    for (const r of [burrito, burritos, tacos, quesadilla, tacoSeasoning]) {
       expect(cuisineLabel(r)).toBe('Mexican');
     }
   });
@@ -44,6 +45,22 @@ describe('cuisineLabel', () => {
   it('does not guess from generic ingredients or word fragments', () => {
     expect(cuisineLabel(plainWrap)).toBeNull();
     expect(cuisineLabel(photo)).toBeNull();
+    expect(cuisineLabel(chipotlePasta)).toBeNull();
+    expect(cuisineLabel(recipe('Honey garlic chicken', ['chicken', 'mirin', 'sambal', 'ketjap manis']))).toBeNull();
+  });
+
+  it('ignores cuisine words that name an ingredient', () => {
+    const yogurt = recipe('Chicken bowl', ['chicken'], { description: 'Served with Greek yogurt and French fries, seasoned with Italian seasoning.' });
+    expect(cuisineLabel(yogurt)).toBeNull();
+    expect(cuisineLabel(recipe('Honey Butter Chicken Sandwich', ['chicken', 'honey', 'butter']))).toBeNull();
+    expect(cuisineLabel(recipe('Butter Chicken', ['chicken', 'cream']))).toBe('Indian');
+  });
+
+  it('trusts a dish in the title or tags, not one mentioned in passing', () => {
+    const cloud = recipe('Cloud Bread', ['eggs'], { description: 'Great as a pizza base or a sandwich.' });
+    expect(cuisineLabel(cloud)).toBeNull();
+    expect(cuisineLabel(recipe('Cheesy bake', ['cheese'], { tags: ['Pizza'] }))).toBe('Italian');
+    expect(cuisineLabel(recipe('Fake-Out Crunch Wrap Supreme', ['tortilla']))).toBe('Mexican');
   });
 });
 
